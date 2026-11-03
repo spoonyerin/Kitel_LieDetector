@@ -84,7 +84,10 @@ Kitel_LieDetector/
 │  ├─ tests/              ← core.test.mjs, live.test.mjs (npm test)
 │  ├─ package.json
 │  └─ server.mjs          ← 예전 웹 단독 개발용 서버 (아래 참고)
-├─ training/              ← 학습 스크립트 (미구현, 실측 데이터만 읽게 할 것)
+├─ training/              ← 학습 파이프라인 (S12, 7.5절)
+│  ├─ build_dataset.py    ← collector 기록 → 시도별 특징 + 확정 라벨 (서버 코드 재사용)
+│  ├─ train_logreg.py     ← 참가자 분리 검증, 기준 모델 비교, model.json 내보내기
+│  └─ out/                ← 출력 (gitignore 대상)
 ├─ tests/                 ← pytest (test_lines, test_tracker, test_sources, test_features, test_quality,
 │                            test_judges, test_reasons, test_app, test_stream, test_serial_source, test_bpm,
 │                            test_questions, test_env)
@@ -93,7 +96,7 @@ Kitel_LieDetector/
    └─ dummy/              ← 더미 (현재 서버는 아무것도 저장하지 않으므로 쓰지 않는다)
 ```
 
-아직 없는 것: `server/storage.py`(기록 저장, I6), `server/models/model.json`과 `server/judges/logreg.py`(M6), `server/judges/dummy.py`(RuleJudge를 먼저 만들어 필요 없어짐, 6절).
+아직 없는 것: `server/storage.py`(기록 저장, I6), `server/judges/logreg.py`(M6, model.json을 읽는 판정기), `server/judges/dummy.py`(RuleJudge를 먼저 만들어 필요 없어짐, 6절).
 
 `web/server.mjs`는 예전 웹 프로토타입을 혼자 띄우던 개발용 정적 서버다(`npm run dev`, 포트 4173, 가상 신호만 사용). `/ws`가 없으므로 웹은 기존 데모 모드로 동작한다. 기기 연동은 Python 서버(`server/app.py`)가 `web/dist`를 같은 포트로 서빙할 때만 동작한다.
 
@@ -147,6 +150,9 @@ Python 서버가 `web/dist`를 같이 서빙한다 (같은 포트라 CORS 설정
 .venv\Scripts\python.exe -m server.cli ports
 .venv\Scripts\python.exe -m server.cli questions --seed 7 --sessions 2
 .venv\Scripts\python.exe -m server.cli features data\real\experiments\run_20261103_161545 --out C:\temp\features.csv
+.venv\Scripts\python.exe -m training.build_dataset                (data/real → training/out/dataset.csv)
+.venv\Scripts\python.exe -m training.train_logreg                 (데이터셋을 만들어 학습·평가·model.json)
+.venv\Scripts\python.exe -m training.train_logreg --data training\out\dataset.csv --out training\out\model.json [--allow-small]
 ```
 
 `features`는 시도별 전체 특징을 CSV로 쓴다 (출력이 `data/real/`, `collector/` 안이면 거부, 종료 코드 2). `--fsr-th`, `--gsr-th`, `--min-sensors`는 임계값 후보를 비교하는 탐색용이며 `rule.py`의 상수를 바꾸지 않는다.
@@ -158,7 +164,7 @@ Python 서버가 `web/dist`를 같이 서빙한다 (같은 포트라 CORS 설정
 cd web; npm test
 ```
 
-2026-11-04 기준 pytest 235개, npm test 26개 통과. 실측 로그가 없으면 해당 테스트는 건너뛴다. 서버 테스트는 127.0.0.1의 빈 포트에 임시 uvicorn을 띄우고, 시리얼 테스트는 가짜 시리얼만 써서 실제 COM 포트를 열지 않는다.
+2026-11-04 기준 pytest 253개, npm test 26개 통과. 실측 로그가 없으면 해당 테스트는 건너뛴다. 서버 테스트는 127.0.0.1의 빈 포트에 임시 uvicorn을 띄우고, 시리얼 테스트는 가짜 시리얼만 써서 실제 COM 포트를 열지 않는다.
 
 수집기 테스트는 따로 실행한다 (현재 폴더 기준으로 `experiments/`를 찾으므로 11절 I8 참고):
 
@@ -414,6 +420,28 @@ class Judge(Protocol):
 
 학습 시 스케일링, 특징 선택, 하이퍼파라미터 조정은 학습 폴드 안에서만 한다.
 
+### 7.5 학습 파이프라인 (S12, `training/`)
+
+**데이터셋** (`training/build_dataset.py`): `data/real/experiments/run_*`를 읽기만 한다.
+
+- 특징: `raw_serial_log.txt` → 진행 추적기 → `server.result.judge_trial`(기준 측정 구간 포함) → `features`. 서버와 같은 코드라 학습/서빙 불일치가 없다 (테스트로 같은 값인지 확인). 학습 특징은 국소 dz 2개 + 전체 특징 23개. 기기 dz는 세션 추세 때문에 넣지 않는다. RuleJudge 판정도 기준 모델 비교용으로 담는다.
+- 라벨 (2026-11-04 사용자 확인): 세션 폴더 `trials_summary.csv`의 `confirmed`가 `as_planned` 또는 `corrected`이고 `condition`이 `truth`/`lie`인 시도만 쓴다 (truth=0, lie=1). `planned_condition`만 있는 시도와 `condition=test`는 쓰지 않는다. `protocol.csv`의 `asked_trials`/`final_condition`과 교차 확인해 다르거나 없으면 `label_mismatch`로 제외한다. `protocol.csv`가 없는 예전 형식 세션은 제외한다.
+- 조인 키: (run 폴더, 세션 순번 k, 기기 시도 번호). `run_events.csv`의 k번째 `SESSION START` 줄의 `session_id` = 세션 폴더 (없으면 폴더 이름의 `_S{k:02d}_`). 참가자는 `trials_summary.csv`의 `participant_id`.
+- 제외 사유(먼저 걸린 하나): 더미, 세션 기록 폴더 없음, 예전 형식, 기록에 시도 없음, 연습, 계획 외, 보류(품질), 미확정, test, 진실/거짓 아님, protocol 불일치. 사유별 개수를 출력한다.
+- 더미 판별: 경로에 `dummy` 폴더가 있거나 run 폴더의 `SOURCE` 파일 내용이 `dummy`. 학습 단계에서도 `source`가 hardware가 아닌 행이 있으면 거부한다.
+- 실측(2026-11-04): run 12개, 시도 41개 중 0건 (연습 38, 예전 형식 3) → "학습할 데이터가 없습니다"로 정상 종료.
+
+**학습** (`training/train_logreg.py`)
+
+- 검증: 참가자 단위 분리. 10명 이하면 한 명씩 빼기, 많으면 GroupKFold(5). 결측 대체(중앙값), 특징 선택(결측 50% 초과·분산 0 제외), 표준화, ±5 클리핑, C 선택(안쪽 참가자 분리 검증, C ∈ {0.01, 0.1, 1, 10})은 모두 학습 폴드 안에서만 한다. 테스트 폴드는 변환만 한다 (테스트 참가자에 아주 큰 값을 넣어 표준화에 섞이지 않는지 확인).
+- 모델: L2 로지스틱 회귀, `class_weight=balanced`, 임계값 0.5.
+- 기준 모델: 항상 다수 클래스(학습 폴드 기준), RuleJudge(3.0σ). 지표: 균형 정확도, 거짓 검출률, 진실→거짓 오판율, 혼동행렬, 참가자별 시도 수.
+- 안전장치: 참가자 5명 미만이면 "탐색용 결과이며 채택하지 않습니다"를 크게 출력하고 model.json을 만들지 않는다 (`--allow-small`이면 `exploratory: true`로만 만든다). 로지스틱 회귀의 균형 정확도가 두 기준 모델보다 모두 높지 않으면 이유를 출력하고 만들지 않는다.
+- `model.json`: 특징 순서, 결측 대체값, 정규화 평균/표준편차, 클리핑 범위, 계수, 절편, 임계값, C, 필터·특징 설정, 버전, 학습 참가자 수·시도 수, 검증 지표. 원시 데이터, 참가자 ID, run 이름은 넣지 않는다. 기본 출력 `training/out/`(gitignore), `data/real/`·`collector/` 안은 거부.
+- 임시값: `MIN_PARTICIPANTS=5`, `MAX_MISSING_FRAC=0.5`, `STD_CLIP=5`, `C_GRID`, 임계값 0.5. 라벨 데이터로 정하지 않았다.
+- 가짜 데이터: 테스트는 `tmp_path`에 만든 가짜 collector 구조와 가짜 라벨, 합성 특징 표만 쓴다. 학습 코드가 읽는 기본 경로(`data/real/experiments`)와 분리되어 있다.
+- 아직 없음: `model.json`을 읽어 판정하는 `LogregJudge` (M6 나머지).
+
 ## 8. 웹 (web/, 구현됨)
 
 - 기존 `Truthpulse_Game` 화면을 그대로 쓴다. `/ws`에 처음 연결되면 기기 연동 모드로 바뀐다. 연결할 수 없으면(예전 데모 서버) 기존 데모 모드로 동작한다.
@@ -467,6 +495,7 @@ class Judge(Protocol):
 | 판정기, 이유 | 임계값 경계, 보류, 넘은 센서만 언급, 쉬운 보류 문장, 실측 161545 회귀 | `tests/test_judges.py`, `tests/test_reasons.py` |
 | 심박 | 합성 50~150 BPM ±2, 신호 없음/약함/불규칙은 None, 판정 미사용, 실측 범위 | `tests/test_bpm.py` |
 | 전처리, 전체 특징 | 인과성(뒤쪽 샘플을 바꿔도 앞 출력 동일), filtfilt 미사용, 합성 신호로 각 특징 값, 평평/기준 없음/짧은 답변 nan, 클리핑, 결정성, 라벨 비참조, RuleJudge 입력 불변, 실측 nan 비율, CSV 출력 보호 | `tests/test_signal.py`, `tests/test_features_full.py` |
+| 학습 | 라벨 규칙과 제외 사유, 서버와 같은 특징, 라벨을 바꿔도 특징 동일, 더미 거부(폴더·SOURCE·행), 예전 형식, 0건 정상 종료, 참가자 분리, 테스트 폴드 비노출, 5명 미만 경고, 기준 미달 시 내보내기 거부, model.json 내용과 서빙 일치, 출력 보호, 결정성 | `tests/test_training.py` |
 | 질문 | 은행 라벨 열 무시, 순서·시드, 배정 규칙(질문 전/후 무효), 세션·재부팅, 소진, 실측 161545, 판정 미사용 | `tests/test_questions.py` |
 | 서버 | 임시 uvicorn + websockets: 방송, 새 접속자 재전송, 샘플·심박 전송 간격, 재생 결과, 오류 | `tests/test_app.py`, `tests/test_stream.py` |
 | 웹 | 입력원 문구("실시간" 금지), 판정 화면 모델, 재연결, 세션 표시, 심박 표시 | `web/tests/live.test.mjs` (+ 기존 `core.test.mjs`) |
@@ -514,7 +543,7 @@ class Judge(Protocol):
 - [x] **M3** FastAPI + WebSocket, 웹 연결(보기 전용), 단계 표시, 배지 (2026-11-04, M2의 S4·S5로 진행)
 - [ ] **M4** 펌웨어 소스 확인 후 기기 결과와 서버 판정 일치 방안 결정, I6 결정
 - [ ] **M5** `RuleJudge` (시연 예비안), 임계값 설정 파일 — RuleJudge는 M2-S3에서 구현. 임계값은 코드 상수이며 설정 파일과 라벨 검증은 남음
-- [ ] **M6** 학습 파이프라인(참가자 분리 검증), `model.json`, `LogregJudge` 교체
+- [ ] **M6** 학습 파이프라인(참가자 분리 검증), `model.json`, `LogregJudge` 교체 — 파이프라인과 model.json 내보내기는 S12에서 구현(2026-11-04). 라벨 확정 데이터 0건이라 학습은 아직 못 함. `LogregJudge`는 남음
 - [ ] **M7** 통합 테스트, 리허설, (선택) ESP32 이식과 저주파 피드백
 
 M1의 수집은 개발과 병행해서 계속한다. M6은 라벨이 확정된 실측 데이터가 충분히 모인 뒤에 한다 (제안: 참가자 8~10명 이상, 확정된 질문 100~200개 이상).
@@ -525,7 +554,7 @@ M1의 수집은 개발과 병행해서 계속한다. M6은 라벨이 확정된 �
 
 1. **라벨 데이터 수집 (M1):** 짧은 실제 세션으로 본 질문 라벨(`condition`, `confirmed`)이 남는지 확인한 뒤 본격 수집. 수집기와 서버는 같은 포트를 동시에 쓸 수 없으므로 수집은 수집기로 한다.
 2. **서버 기록 저장 (I6):** 저장 위치와 형식 결정 후 `server/storage.py` (모든 기록에 `source`).
-3. **로지스틱 회귀 (M6):** 참가자 단위 분리 검증, 다수 클래스 기준 모델과 RuleJudge 비교, `model.json`, `LogregJudge`. 기준을 못 넘으면 채택하지 않는다.
+3. **로지스틱 회귀 (M6):** 파이프라인은 S12 완료 (`python -m training.train_logreg`). 라벨 데이터가 모이면 실행하고, 기준을 넘으면 `LogregJudge`를 만든다.
 4. **RuleJudge 임계값 검증:** 라벨 데이터로 3.0σ와 국소 dz의 타당성을 평가하고 설정 파일로 옮긴다 (M5).
 5. **심박 추정 검증 (I14):** 다른 측정기와 비교, 그 뒤에 `hr_delta` 특징 검토.
 6. **블루투스 SPP:** ESP32 Bluetooth 시리얼(SPP)로 연결하면 Windows에 COM 포트로 잡히므로 `SOURCE=serial`을 그대로 쓸 수 있을 것으로 예상한다 (미확인). DTR/RTS, 재연결, 지연을 실기기로 확인한다.
