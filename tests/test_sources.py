@@ -22,25 +22,49 @@ REAL_RUN = os.path.join(ROOT, "data", "real", "experiments", "run_20261103_16154
 
 
 # ---------- 시간 맞춤 ----------
+class FakeClock:
+    """sleep한 만큼만 시간이 가는 가짜 시계."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.waits = []
+
+    def sleep(self, s):
+        self.waits.append(s)
+        self.now += s
+
+    def clock(self):
+        return self.now
+
+
 def test_paced_waits_by_time_difference():
-    waits = []
+    fc = FakeClock()
     items = [(0.0, "a"), (0.5, "b"), (0.5, "c"), (2.5, "d")]
-    assert list(paced(items, speed=1.0, max_wait=10, sleep=waits.append)) == ["a", "b", "c", "d"]
-    assert waits == [0.5, 2.0]
+    assert list(paced(items, speed=1.0, max_wait=10, sleep=fc.sleep, clock=fc.clock)) == ["a", "b", "c", "d"]
+    assert fc.waits == [0.5, 2.0]
 
 
 def test_paced_speed_cap_and_backwards():
-    waits = []
+    fc = FakeClock()
     items = [(0.0, "a"), (4.0, "b"), (100.0, "c"), (1.0, "d"), (None, "e"), (1.2, "f")]
-    list(paced(items, speed=2.0, max_wait=3.0, sleep=waits.append))
+    list(paced(items, speed=2.0, max_wait=3.0, sleep=fc.sleep, clock=fc.clock))
     # 4초/2배 = 2초, 96초/2배 = 48초 → 상한 3초, 시각이 거꾸로 가면 대기 없음, None은 건너뜀
-    assert waits == [2.0, 3.0, pytest.approx(0.1)]
+    assert fc.waits == [2.0, 3.0, pytest.approx(0.1)]
 
 
 def test_paced_speed_zero_never_sleeps():
-    waits = []
-    list(paced([(0.0, "a"), (5.0, "b")], speed=0, sleep=waits.append))
-    assert waits == []
+    fc = FakeClock()
+    list(paced([(0.0, "a"), (5.0, "b")], speed=0, sleep=fc.sleep, clock=fc.clock))
+    assert fc.waits == []
+
+
+def test_paced_small_gaps_do_not_accumulate_delay():
+    """20ms 간격 1000줄을 100배속으로: 짧은 대기는 건너뛰고 몰아서 기다리므로 총 대기 ≈ 0.2초."""
+    fc = FakeClock()
+    items = [(i * 0.02, str(i)) for i in range(1001)]
+    list(paced(items, speed=100, max_wait=2.0, sleep=fc.sleep, clock=fc.clock))
+    assert sum(fc.waits) == pytest.approx(0.2, abs=0.01)
+    assert all(w >= 0.005 for w in fc.waits) and len(fc.waits) < 1000
 
 
 # ---------- 재생 ----------
