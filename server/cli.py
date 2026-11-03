@@ -9,6 +9,7 @@ parse : 원시 로그를 줄 해석기로 읽고 종류별 개수, 요약의 val
 replay: 원시 로그를 재생해 진행 추적기에 넣고 단계 변화와 시도별 결과를 출력한다 (source=hardware).
 dummy : 합성 신호를 진행 추적기에 넣고 같은 형식으로 출력한다 (source=dummy).
 ports : 연결된 COM 포트 목록을 보여 준다 (포트를 열지 않는다).
+questions: 시드별 질문 순서를 미리 본다 (연습 1 + 본 질문 5 + 추가 질문). 라벨은 없다.
 bpm   : 원시 로그의 IR로 심박수를 1초(기기 시각)마다 추정해 분포와 계산 못 한 사유를 보여 준다.
         추정값이며 정답 심박과 비교하지 않았다.
 replay/dummy에 --judge를 주면 시도마다 RuleJudge로 판정하고 이유를 출력한다 (--json: trial_result JSON).
@@ -240,6 +241,21 @@ def e_text(reason):
     return REASON_TEXT.get(reason, "")
 
 
+def cmd_questions(args) -> int:
+    from server.config import DEFAULT_QUESTION_BANK
+    from server.questions import QuestionPlanner, load_questions
+    planner = QuestionPlanner(load_questions(args.bank or DEFAULT_QUESTION_BANK), args.seed)
+    print(f"질문 순서 (시드 {planner.seed}). 서버를 같은 순서로 켜려면 QUESTION_SEED={planner.seed}")
+    for s in range(1, args.sessions + 1):
+        print(f"\n세션 S{s:02d}")
+        for i, q in enumerate(planner.order_for_session(s), 1):
+            if q.role == "extra" and not args.all:
+                print("  (이후 추가 질문은 --all로 보기)")
+                break
+            print(f"  {i:>2}. [{q.label}] {q.question_id} {q.question_text}")
+    return 0
+
+
 def cmd_ports(args, lister=None) -> int:
     """COM 포트 목록. 포트를 열지 않으므로 기기가 재부팅되지 않는다."""
     from server.source.serial_source import list_ports
@@ -261,6 +277,13 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("ports", help="연결된 COM 포트 목록 (포트를 열지 않음)")
     p.set_defaults(func=cmd_ports)
+
+    p = sub.add_parser("questions", help="시드별 질문 순서를 미리 본다 (라벨 없음)")
+    p.add_argument("--seed", type=int, default=None, help="QUESTION_SEED와 같은 값 (없으면 무작위)")
+    p.add_argument("--sessions", type=int, default=1, help="보여 줄 세션 수 (기본 1)")
+    p.add_argument("--all", action="store_true", help="추가 질문까지 모두 보기")
+    p.add_argument("--bank", default=None, help="질문 은행 경로 (기본 collector/question_bank.csv)")
+    p.set_defaults(func=cmd_questions)
 
     p = sub.add_parser("bpm", help="원시 로그의 IR로 심박 추정값 분포를 본다 (읽기 전용)")
     p.add_argument("path", help="run 폴더 또는 raw_serial_log.txt 경로")

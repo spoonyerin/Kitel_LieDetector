@@ -17,3 +17,16 @@
 .contrib-row.over .contrib-value{color:#9a6334;font-weight:600}
 .contrib-value{text-align:right}
 .live-judge-note,.live-disclaimer{margin:6px 0}
+/* 질문 표시 (live.mjs questionView): preview = 다음 질문(흐리게), active = 크게, dim = 방금 질문 */
+.live-question{margin:14px 0 6px;padding:14px 16px;border-radius:8px;border:1px solid var(--line);background:#fbfcf9;transition:opacity .2s}
+.live-question-label{display:block;font-size:10px;letter-spacing:.5px;color:#7b8780;margin-bottom:6px}
+.live-question-text{margin:0;font-weight:600;color:var(--ink);line-height:1.5}
+.live-question-note{margin:8px 0 0}
+.live-question.active{border:2px solid var(--green);background:#f2f8ec}
+.live-question.active .live-question-text{font-size:24px}
+.live-question.active .live-question-label{color:var(--green);font-weight:600}
+.live-question.preview{opacity:.6}
+.live-question.preview .live-question-text{font-size:16px}
+.live-question.dim{opacity:.45}
+.live-question.dim .live-question-text{font-size:13px;font-weight:500}
+.live-result-question{color:#56674d}

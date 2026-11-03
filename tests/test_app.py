@@ -23,6 +23,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from server.app import create_app  # noqa: E402
+from server.judges.base import check_no_labels  # noqa: E402
 from server.config import DEFAULT_REPLAY_RUN, Settings, load_settings  # noqa: E402
 
 REAL_LOG = os.path.join(DEFAULT_REPLAY_RUN, "raw_serial_log.txt")
@@ -162,12 +163,13 @@ def test_new_client_gets_history():
         late = _collect(port, lambda m: len(_results(m)) == 3, timeout=5)
     assert late[0]["type"] == "device_status" and late[0]["finished"] is True
     kinds = [m["type"] for m in late]
-    # 상태 → 기준 측정 → 마지막 단계 → 최근 샘플 → 시도 결과 순서
-    assert kinds[1:3] == ["baseline_result", "phase_update"] and late[2]["phase"]
+    # 상태 → 기준 측정 → 현재 질문 → 마지막 단계 → (심박) → 최근 샘플 → 시도 결과 순서
+    assert kinds[1:4] == ["baseline_result", "question_update", "phase_update"] and late[3]["phase"]
     first_result = kinds.index("trial_result")
     assert "sample_batch" in kinds[3:first_result]
     assert _results(late) == _results(live)
     assert late[1] == [m for m in live if m["type"] == "baseline_result"][-1]
+    assert late[2] == [m for m in live if m["type"] == "question_update"][-1]
 
 
 def test_clients_send_messages_are_ignored():
@@ -224,6 +226,54 @@ def test_bpm_updates_live_and_on_join():
     assert [m for m in late if m["type"] == "bpm_update"] == [bpms[-1]]
     results = _results(msgs)
     assert all("bpm" not in r["features"] for r in results)           # 판정에는 쓰지 않는다
+
+
+def test_questions_live_and_trial_result_ids():
+    """질문이 READY 단계 메시지보다 먼저 오고, trial_result의 question_id가 그 시도에 배정된 질문과 같다."""
+    settings = Settings(source="dummy", dummy_trials=3, dummy_patterns=["calm", "poor", "calm"],
+                        dummy_speed=0, question_seed=11)
+    from server.questions import QuestionPlanner, load_questions
+    order = QuestionPlanner(load_questions(), seed=11).order_for_session(1)
+    with running_server(settings) as port:
+        msgs = _collect(port, lambda m: _finished(m) and len(_results(m)) == 3)
+        late = _collect(port, lambda m: len(_results(m)) == 3, timeout=5)
+    results = _results(msgs)
+    # 2번(poor)은 질문 구간 이후 무효 → 3번은 다음 질문
+    assert [(r["question_id"], r["question_text"], r["question_label"]) for r in results] == \
+        [(q.question_id, q.question_text, q.label) for q in order[:3]]
+    assert results[0]["question_label"] == "연습 질문"
+    assert all("condition" not in r and "ground_truth" not in r for r in results)
+    qmsgs = [m for m in msgs if m["type"] == "question_update"]
+    assert qmsgs and all(m["seed"] == 11 for m in qmsgs)
+    assert qmsgs[-1]["order_note"] == "질문 순서는 서버가 정합니다. 진행자는 화면의 질문을 읽어 주세요."
+    for m in qmsgs:
+        check_no_labels(m)   # 질문 메시지에 정답 라벨 키가 없다
+    # 같은 시드면 같은 질문 (판정 결과도 질문과 상관없이 같다)
+    with running_server(settings) as port:
+        again = _collect(port, lambda m: _finished(m) and len(_results(m)) == 3)
+    assert [r["question_id"] for r in _results(again)] == [r["question_id"] for r in _results(msgs)]
+    assert [r["decision"] for r in _results(again)] == ["truth", "inconclusive", "truth"]
+    # 새 접속자는 마지막 질문 상태(세션 종료 후 비움)를 받는다
+    assert [m for m in late if m["type"] == "question_update"] == [[m for m in msgs if m["type"] == "question_update"][-1]]
+
+
+def test_replay_question_note():
+    if not os.path.isfile(REAL_LOG):
+        pytest.skip("실측 로그 없음")
+    with running_server(Settings(source="replay", replay_speed=0, question_seed=2)) as port:
+        msgs = _collect(port, lambda m: _finished(m) and len(_results(m)) == 11)
+    q = [m for m in msgs if m["type"] == "question_update" and m["trial"]]
+    assert q and all("기록 당시 실제로 물은 질문과 다를 수 있습니다" in m["order_note"] for m in q)
+    results = _results(msgs)
+    assert results[0]["question_id"] == results[1]["question_id"]   # T01이 질문 전에 무효 → T02가 같은 질문
+    counts = {d: sum(1 for r in results if r["decision"] == d) for d in ("truth", "lie", "inconclusive")}
+    assert counts == {"truth": 5, "lie": 2, "inconclusive": 4}        # 질문 기능이 판정을 바꾸지 않는다
+
+
+def test_question_settings():
+    assert load_settings({"QUESTION_SEED": "42"}).question_seed == 42
+    assert load_settings({}).question_seed is None
+    assert load_settings({}).question_bank.endswith(os.path.join("collector", "question_bank.csv"))
 
 
 def test_bpm_interval_setting():

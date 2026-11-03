@@ -1,5 +1,5 @@
 import { CHANNELS, STORAGE_KEY, demoSample, summarizeBaseline, summarizeDemo, recordsToCsv, parseRecords } from './core.mjs';
-import { UNTRAINED_BADGE, TOAST_EVENTS, bpmView, connectLive, eventLabel, initialState, inputLabel, latestResult, normalize, noticeText, phaseDisplay, phaseStep, reduce, sessionLabel, signalHeading, streamStatusText, trialView, wsUrl } from './live.mjs';
+import { UNTRAINED_BADGE, TOAST_EVENTS, bpmView, connectLive, eventLabel, initialState, inputLabel, latestResult, normalize, noticeText, phaseDisplay, phaseStep, questionView, reduce, sessionLabel, signalHeading, streamStatusText, trialView, wsUrl } from './live.mjs';
 const $ = id => document.getElementById(id);
 const palette = { hr: '#4e8166', gsr: '#c68c58', fsr: '#9790c3' };
 const questionBank = ['지금 떠올린 숫자는 짝수인가요?', '오늘 아침을 먹었나요?', '지금 보고 있는 카드에 숫자 3이 있나요?', '최근 일주일 안에 영화를 봤나요?', '지금 선택한 색은 파란색인가요?'];
@@ -257,12 +257,22 @@ function renderLivePhase() {
   const steps = ['baseline', 'question', 'result'], current = phaseStep(p);
   steps.forEach((s, i) => { $(`step-${s}`).className = current === s ? 'current' : i < steps.indexOf(current) ? 'complete' : ''; });
   $('session-label').textContent = sessionLabel(live.session);
+  renderLiveQuestion();
   $('participant-display').textContent = live.phase?.trial ? `질문 ${live.phase.trial}` : '질문 전';
   const bl = live.baseline;
   for (const k of ['gsr', 'fsr']) {
     const m = bl?.[k]?.mean, sd = bl?.[k]?.sd;
     $(`${k}-baseline`).textContent = Number.isFinite(m) ? `${m.toFixed(0)}${Number.isFinite(sd) ? ` ± ${sd.toFixed(1)}` : ''}` : '측정 전';
   }
+}
+function renderLiveQuestion() {
+  const q = questionView(live.question, live.phase, live.session);
+  const box = $('live-question');
+  box.hidden = q.mode === 'hidden';
+  box.className = `live-question ${q.mode}`;
+  $('live-question-label').textContent = q.label ? `${q.heading} · ${q.label}` : q.heading;
+  $('live-question-text').textContent = q.text;
+  $('live-question-note').textContent = q.note;
 }
 function renderLiveBpm(msg) {
   const v = bpmView(msg); // 값이 없을 때만 '심박 계산 전'
@@ -289,7 +299,9 @@ function renderLiveResult() {
   const head = el('div', 'live-decision');
   head.append(el('div', `result-heading ${v.kind}`, v.decisionLabel));
   if (v.badge) head.append(el('span', 'badge-untrained', v.badge));
-  box.append(el('p', 'live-meta', `${v.title} · ${v.sourceLabel} · 판정기 ${v.judgeLabel}`), head);
+  box.append(el('p', 'live-meta', `${v.title} · ${v.sourceLabel} · 판정기 ${v.judgeLabel}`));
+  if (v.questionText) box.append(el('p', 'live-meta live-result-question', `${v.questionLabel ? `${v.questionLabel}: ` : ''}${v.questionText}`));
+  box.append(head);
   box.append(el('p', 'live-label', v.decision === 'inconclusive' ? '보류 사유' : '판정 이유'));
   const list = el('ul', 'reason-list'); v.reasons.forEach(t => list.append(el('li', '', t))); box.append(list);
   if (v.contributions.length) {
@@ -309,7 +321,7 @@ function renderLiveRecent() {
   const rows = live.results.slice(-3).reverse();
   $('recent-rounds').replaceChildren();
   if (!rows.length) { const box = el('div', 'empty-inline'); box.append(el('span', '', '⌁'), el('p', '', '첫 판정을 기다리고 있어요.')); $('recent-rounds').append(box); return; }
-  rows.forEach(r => { const v = trialView(r); const row = el('div', 'record-row'); const info = el('span', '', v.title); info.append(el('small', '', `${v.sourceLabel}${v.badge ? ` · ${v.badge}` : ''}`)); row.append(info, el('span', '', v.decisionLabel)); $('recent-rounds').append(row); });
+  rows.forEach(r => { const v = trialView(r); const row = el('div', 'record-row'); const info = el('span', '', v.questionText ? `${v.title} · ${v.questionText}` : v.title); info.append(el('small', '', `${v.sourceLabel}${v.badge ? ` · ${v.badge}` : ''}`)); row.append(info, el('span', '', v.decisionLabel)); $('recent-rounds').append(row); });
 }
 function renderLive() { renderLiveStatus(); renderLivePhase(); renderLiveValues(); renderLiveBpm(live.bpm); renderLiveResult(); renderLiveRecent(); scheduleLiveDraw(); }
 function scheduleLiveDraw() {
