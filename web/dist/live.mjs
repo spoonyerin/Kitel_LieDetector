@@ -11,7 +11,10 @@ export const INPUT_LABELS = { replay: '저장된 로그 재생', dummy: '합성 
 export const isLive = status => !!status && status.input === 'serial' && status.live === true;
 export function inputLabel(status) {
   if (!status) return '연결 대기';
-  if (status.input === 'serial') return isLive(status) ? INPUT_LABELS.serial : '기기 (연결 확인 중)';
+  if (status.input === 'serial') {
+    if (isLive(status)) return INPUT_LABELS.serial;
+    return status.connected ? '기기 연결됨 · 신호 대기' : '기기 연결 끊김';
+  }
   return INPUT_LABELS[status.input] ?? '알 수 없는 입력원';
 }
 export function signalHeading(status) {
@@ -23,13 +26,17 @@ export function streamStatusText(status, connection = 'open') {
   if (status.finished) return status.input === 'replay' ? '재생이 끝났습니다' : '입력이 끝났습니다';
   if (status.input === 'replay') return '저장된 로그를 재생하는 중';
   if (status.input === 'dummy') return '합성 신호를 받는 중';
-  return isLive(status) ? '기기에서 측정하는 중' : '기기 연결 확인 중';
+  if (isLive(status)) return '기기에서 측정하는 중';
+  return status.connected ? '기기 신호를 기다리는 중' : '기기에 다시 연결하는 중';
 }
 export function noticeText(status) {
   const label = inputLabel(status);
   if (status?.input === 'replay') return [label, '예전에 기기로 기록한 신호를 다시 보여 주는 중입니다. 지금 측정하는 값이 아닙니다.'];
   if (status?.input === 'dummy') return [label, '하드웨어 없이 만든 합성 신호입니다. 실제 사람의 신호가 아닙니다.'];
   if (isLive(status)) return [label, '연결된 기기의 신호를 보여 줍니다.'];
+  if (status?.input === 'serial') {
+    return [label, status.connected ? '기기 포트는 열려 있고 신호를 기다리는 중입니다.' : '기기 포트에 다시 연결하는 중입니다.'];
+  }
   return [label, '서버에 연결하는 중입니다.'];
 }
 
@@ -122,7 +129,8 @@ export function batchToPoints(b) {
 }
 export function reduce(state, msg) {
   switch (msg?.type) {
-    case 'device_status': return { ...state, status: msg };
+    // 시리얼이 다시 연결되면 지난 연결 오류(띠)를 지운다
+    case 'device_status': return { ...state, status: msg, error: msg.input === 'serial' && msg.connected ? null : state.error };
     case 'phase_update': {
       let next = state;
       if (msg.session_index) next = { ...next, session: { index: msg.session_index, active: msg.session_active === true } };

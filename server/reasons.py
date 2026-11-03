@@ -34,6 +34,8 @@ def hold_text(code: str) -> str:
     if kind == "DEVICE_INVALID":
         why = DEVICE_REASON_KR.get(arg)
         return f"{why} {EXCLUDED}" if why else f"기기가 이 답변을 무효로 처리해서 {EXCLUDED}"
+    if kind == "DEVICE_RESET":
+        return f"답변 중에 기기가 다시 시작돼서 {EXCLUDED}"
     if kind == "NO_SUMMARY":
         return f"기기에서 측정 결과를 받지 못해서 {NOT_JUDGED}"
     if kind == "Q_TOO_SHORT":

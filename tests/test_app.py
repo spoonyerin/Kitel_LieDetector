@@ -39,8 +39,9 @@ def test_settings_defaults_and_env():
 
 
 def test_settings_reject_bad_values():
-    with pytest.raises(ValueError, match="S5b"):
+    with pytest.raises(ValueError, match="SERIAL_PORT"):   # serial은 포트가 있어야 한다
         load_settings({"SOURCE": "serial"})
+    assert load_settings({"SOURCE": "serial", "SERIAL_PORT": "COM6"}).source == "serial"
     with pytest.raises(ValueError):
         load_settings({"SOURCE": "camera"})
     with pytest.raises(ValueError):

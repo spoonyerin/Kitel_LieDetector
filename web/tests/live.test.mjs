@@ -38,6 +38,32 @@ test('replay and dummy are never labelled as real-time measurement', () => {
   assert.match(streamStatusText(status('dummy'), 'disconnected'), /연결 끊김/);
 });
 
+test('serial is real-time only while the device is sending lines', () => {
+  const sending = status('serial', { live: true, connected: true });
+  const waiting = status('serial', { live: false, connected: true });
+  const lost = status('serial', { live: false, connected: false });
+  assert.equal(inputLabel(sending), '실시간 기기'); assert.equal(streamStatusText(sending), '기기에서 측정하는 중');
+  assert.equal(inputLabel(waiting), '기기 연결됨 · 신호 대기'); assert.equal(streamStatusText(waiting), '기기 신호를 기다리는 중');
+  assert.equal(inputLabel(lost), '기기 연결 끊김'); assert.equal(streamStatusText(lost), '기기에 다시 연결하는 중');
+  for (const s of [waiting, lost]) {
+    for (const text of [inputLabel(s), signalHeading(s), streamStatusText(s), ...noticeText(s)]) assert.ok(!text.includes('실시간'), text);
+  }
+  assert.equal(signalHeading(sending), '실시간 생체신호');
+});
+
+test('serial reconnect clears the previous connection error', () => {
+  let s = initialState();
+  s = reduce(s, { type: 'error', retryable: true, message: '기기 연결이 끊겼습니다 (COM6)' });
+  s = reduce(s, status('serial', { connected: false }));
+  assert.ok(s.error);
+  s = reduce(s, status('serial', { connected: true }));
+  assert.equal(s.error, null);
+  // 재생/더미의 오류는 상태 메시지로 지우지 않는다
+  let r = reduce(initialState(), { type: 'error', message: '원시 로그가 없습니다' });
+  r = reduce(r, status('replay', { connected: true }));
+  assert.ok(r.error);
+});
+
 test('trial view shows decision, reasons, untrained badge, judge note and disclaimer', () => {
   const v = trialView(result());
   assert.equal(v.decisionLabel, '거짓'); assert.equal(v.kind, 'warn');

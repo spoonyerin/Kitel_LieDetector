@@ -40,6 +40,7 @@ from server.result import for_web, judge_trial
 from server.source.dummy_source import DummyConfig, DummySource
 from server.source.lines import Sample
 from server.source.replay_source import ReplaySource
+from server.source.serial_source import SerialSource, SourceStatus
 from server.stream import SampleBatcher, baseline_message
 
 # Windows 레지스트리에 따라 .mjs가 JavaScript로 인식되지 않을 수 있어 직접 지정한다 (모듈 스크립트 필수).
@@ -52,26 +53,47 @@ logger = logging.getLogger("truthpulse")
 INPUT_INFO = {
     "replay": {"label": "저장된 로그 재생", "live": False},
     "dummy": {"label": "합성 신호 (더미)", "live": False},
+    # serial의 live는 기기 줄을 실제로 받는 동안만 true (SourceStatus receiving/idle/disconnected로 바뀜)
+    "serial": {"label": "실시간 기기", "live": False},
 }
 
 
 # ----------------------------------------------------------
 # 입력원과 메시지 변환
 # ----------------------------------------------------------
-def make_source(settings: Settings, sleep):
+def make_source(settings: Settings, sleep, stop: threading.Event = None):
     if settings.source == "replay":
         return ReplaySource(settings.replay_run, speed=settings.replay_speed,
                             max_wait=settings.replay_max_wait, sleep=sleep)
+    if settings.source == "serial":
+        return SerialSource(settings.serial_port, settings.serial_baud, retry_sec=settings.serial_retry_sec,
+                            idle_sec=settings.serial_idle_sec, sleep=sleep, stop=stop)
     cfg = DummyConfig(trials=settings.dummy_trials, patterns=list(settings.dummy_patterns),
                       seed=settings.dummy_seed)
     return DummySource(cfg, speed=settings.dummy_speed, max_wait=2.0, sleep=sleep)
 
 
-def device_status(settings: Settings, source_label: str, connected: bool, finished: bool = False) -> dict:
+def device_status(settings: Settings, source_label: str, connected: bool, finished: bool = False,
+                  live: Optional[bool] = None, message: str = "") -> dict:
     info = INPUT_INFO[settings.source]
     return {"type": "device_status", "input": settings.source, "input_label": info["label"],
-            "live": info["live"], "source": source_label, "connected": connected, "finished": finished,
-            "replay_run": settings.replay_run if settings.source == "replay" else None}
+            "live": info["live"] if live is None else live, "source": source_label,
+            "connected": connected, "finished": finished, "message": message,
+            "replay_run": settings.replay_run if settings.source == "replay" else None,
+            "port": settings.serial_port if settings.source == "serial" else None}
+
+
+def status_messages(settings: Settings, st: SourceStatus) -> list:
+    """시리얼 입력원 상태 → device_status (+ 오류면 error)."""
+    if st.kind == "open":
+        return [device_status(settings, "hardware", connected=True, live=False, message=st.message)]
+    if st.kind == "receiving":
+        return [device_status(settings, "hardware", connected=True, live=True, message=st.message)]
+    if st.kind == "idle":
+        return [device_status(settings, "hardware", connected=True, live=False, message=st.message)]
+    # disconnected, open_failed: 화면에 오류를 보내고 다시 연결을 기다린다
+    return [{"type": "error", "retryable": True, "message": st.message},
+            device_status(settings, "hardware", connected=False, live=False, message=st.message)]
 
 
 def _event_msg(name, detail="", trial=0, esp_session=None, esp_time_ms=None):
@@ -118,16 +140,19 @@ def with_session(msg: dict, tracker: Tracker) -> dict:
     return msg
 
 
-def run_pipeline(settings: Settings, emit, stop: threading.Event) -> None:
-    """별도 스레드에서 돈다. emit(msg)로 메시지를 넘긴다. stop이 켜지면 바로 멈춘다."""
-    source = None
+def run_pipeline(settings: Settings, emit, stop: threading.Event, source=None) -> None:
+    """별도 스레드에서 돈다. emit(msg)로 메시지를 넘긴다. stop이 켜지면 바로 멈춘다.
+
+    source를 주면 그 입력원을 쓴다 (테스트에서 가짜 시리얼 입력원을 넣을 때).
+    """
     try:
-        source = make_source(settings, sleep=stop.wait)
+        source = source or make_source(settings, sleep=stop.wait, stop=stop)
         judge = RuleJudge()
         tracker = Tracker(source.source)
         batcher = SampleBatcher(source.source, batch_sec=settings.sample_batch_sec,
                                 decimate=settings.sample_decimate, max_samples=settings.sample_max_per_batch)
-        emit(device_status(settings, source.source, connected=True))
+        # 시리얼은 포트를 열기 전이므로 연결 안 됨으로 시작한다
+        emit(device_status(settings, source.source, connected=settings.source != "serial"))
 
         def handle(updates):
             for u in updates:
@@ -138,6 +163,14 @@ def run_pipeline(settings: Settings, emit, stop: threading.Event) -> None:
         for line in source.lines():
             if stop.is_set():
                 return
+            if isinstance(line, SourceStatus):   # 시리얼 입력원의 연결 상태
+                if line.kind in ("disconnected", "open_failed"):
+                    last = batcher.flush()
+                    if last:
+                        emit(last)
+                for msg in status_messages(settings, line):
+                    emit(msg)
+                continue
             item = tracker.parser.feed(line)   # 추적기와 같은 해석기를 쓴다
             if item is None:
                 continue
@@ -146,6 +179,8 @@ def run_pipeline(settings: Settings, emit, stop: threading.Event) -> None:
                 if batch:
                     emit(batch)
             handle(tracker.feed(item))
+        if stop.is_set():   # 서버 종료로 멈춘 경우: 끝 처리 없이 나간다
+            return
         last = batcher.flush()
         if last:
             emit(last)
@@ -153,7 +188,7 @@ def run_pipeline(settings: Settings, emit, stop: threading.Event) -> None:
         emit(device_status(settings, source.source, connected=False, finished=True))
     except Exception as e:  # 입력원 오류는 화면에 알리고 스레드를 끝낸다
         emit({"type": "error", "retryable": False, "message": f"입력원 오류: {e}"})
-        label = source.source if source else ("hardware" if settings.source == "replay" else "dummy")
+        label = source.source if source else ("dummy" if settings.source == "dummy" else "hardware")
         emit(device_status(settings, label, connected=False, finished=True))
 
 
@@ -183,6 +218,8 @@ class Hub:
         t = msg.get("type")
         if t == "device_status":
             self.status = msg
+            if msg.get("connected") and msg.get("input") == "serial":
+                self.error = None   # 다시 연결되면 지난 연결 오류는 새 접속자에게 보내지 않는다
         elif t == "phase_update" and msg.get("phase"):
             self.phase = msg
         elif t == "trial_result":

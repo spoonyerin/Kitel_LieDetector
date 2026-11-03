@@ -8,6 +8,7 @@
 parse : 원시 로그를 줄 해석기로 읽고 종류별 개수, 요약의 valid/reason 분포, 해석 불가 줄 예시를 출력한다.
 replay: 원시 로그를 재생해 진행 추적기에 넣고 단계 변화와 시도별 결과를 출력한다 (source=hardware).
 dummy : 합성 신호를 진행 추적기에 넣고 같은 형식으로 출력한다 (source=dummy).
+ports : 연결된 COM 포트 목록을 보여 준다 (포트를 열지 않는다).
 replay/dummy에 --judge를 주면 시도마다 RuleJudge로 판정하고 이유를 출력한다 (--json: trial_result JSON).
 --fsr-th, --gsr-th, --min-sensors는 임계값 후보를 비교하는 탐색용이며 rule.py의 상수를 바꾸지 않는다.
 """
@@ -194,9 +195,27 @@ def cmd_dummy(args) -> int:
                 _make_judge(args), args.json)
 
 
+def cmd_ports(args, lister=None) -> int:
+    """COM 포트 목록. 포트를 열지 않으므로 기기가 재부팅되지 않는다."""
+    from server.source.serial_source import list_ports
+    ports = (lister or list_ports)()
+    if not ports:
+        print("연결된 COM 포트가 없습니다. USB 케이블과 드라이버(CP210x/CH340 등)를 확인하세요.")
+        return 0
+    print(f"COM 포트 {len(ports)}개:")
+    for device, desc, hwid in ports:
+        print(f"  {device:<8} {desc}  [{hwid}]")
+    print("\n서버 실행 예:  $env:SOURCE=\"serial\"; $env:SERIAL_PORT=\"" + ports[0][0] + "\"; "
+          ".venv\\Scripts\\python.exe -m uvicorn server.app:app --port 8000")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="server.cli", description="TruthPulse 서버 명령줄 도구 (읽기 전용)")
     sub = ap.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("ports", help="연결된 COM 포트 목록 (포트를 열지 않음)")
+    p.set_defaults(func=cmd_ports)
 
     p = sub.add_parser("parse", help="원시 로그를 해석해 요약을 출력한다")
     p.add_argument("path", help="run 폴더 또는 raw_serial_log.txt 경로")

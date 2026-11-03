@@ -1,6 +1,7 @@
 """품질 검사 (S3 최소판). 판정하지 말아야 할 시도를 골라 보류 사유 코드를 붙인다.
 
 보류 사유 코드 (앞에서부터 먼저 확인한다):
+    DEVICE_RESET             시도 중에 기기가 재부팅됨 (추적기 상태 INTERRUPTED)
     NO_SUMMARY               기기 요약을 받지 못함
     DEVICE_INVALID:<사유>     기기가 valid=0으로 보냄 (예: HAND_OFF_LONG, HAND_LIFTED)
     Q_TOO_SHORT:<샘플 수>     QUESTION 구간이 너무 짧아 국소 dz의 기준을 만들 수 없음
@@ -55,6 +56,8 @@ def assess(trial, feature_problems: List[str], hold_on_contact: bool = None) -> 
     flags, warnings = [], []
     sm = trial.summary
 
+    if getattr(trial, "status", "") == "INTERRUPTED":
+        flags.append("DEVICE_RESET")
     if sm is None:
         flags.append("NO_SUMMARY")
     elif not sm.valid:
