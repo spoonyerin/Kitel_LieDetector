@@ -1,4 +1,7 @@
-# TruthPulse 개발 문서 v0.2
+# TruthPulse 개발 문서 v0.3
+
+- 갱신일: 2026-11-04
+- v0.2에서 바뀐 점: M2 구현(S1~S7) 결과를 반영했다. 실제 폴더 구조, 실행 방법(dummy/replay/serial), 서버↔웹 메시지, 판정기(RuleJudge, 국소 dz), 심박 추정값, 알려진 한계와 앞으로 할 일을 정리했다. 구현되지 않은 항목(서버 기록 저장, 학습 판정기 등)은 "미구현"으로 표시했다.
 
 Claude Code는 작업 시작 전에 이 문서를 읽는다. 제품 요구사항은 `docs/PRD.md`에 있다.
 
@@ -12,6 +15,7 @@ Claude Code는 작업 시작 전에 이 문서를 읽는다. 제품 요구사항
 | `docs/development.md` (이 문서) | 구조, 규칙, 데이터 계약, 단계 | 항상 |
 | `INTEGRATION.md` | 웹과 장치 연동 계약 제안 (기존 웹 프로토타입 문서) | 통신 코드를 만질 때 |
 | `collector/record_session.py` 상단 설명 | 수집기 사용법과 저장 구조 | 수집기를 만질 때 |
+| `server/config.py` 상단 표 | 서버 환경 변수 전체 목록과 기본값 | 서버를 실행하거나 설정을 바꿀 때 |
 
 ## 1. 작업 규칙 (반드시 지킬 것)
 
@@ -29,7 +33,7 @@ Claude Code는 작업 시작 전에 이 문서를 읽는다. 제품 요구사항
 12. 실측 데이터, 비밀 값, `.env`는 저장소에 올라가지 않게 `.gitignore`를 유지한다.
 13. 문서와 코드가 달라지면 문서도 같이 고친다. 특히 11절 이슈 목록과 12절 체크리스트를 갱신한다.
 
-## 2. 폴더 구조
+## 2. 폴더 구조 (2026-11-04 기준 실제 파일)
 
 ```
 Kitel_LieDetector/
@@ -40,40 +44,59 @@ Kitel_LieDetector/
 ├─ docs/
 │  ├─ PRD.md
 │  └─ development.md
-├─ collector/             ← LieDetector에서 가져온 수집, 분석 코드 (구조 변경 금지)
+├─ collector/             ← LieDetector에서 가져온 수집, 분석 코드 (구조 변경 금지, 서버는 import만 함)
 │  ├─ record_session.py   ← 수집기. COM 포트로 기기 출력을 읽고 CSV로 저장
 │  ├─ extract_features.py
 │  ├─ analyze_data.py     ← 필터링 분석용 (실시간 경로 아님)
 │  ├─ calculate_bpm.py
-│  ├─ recover_data.py
+│  ├─ recover_data.py     ← parse_raw_log: 서버 줄 해석기의 비교 기준 (테스트에서 사용)
 │  ├─ test_replay.py      ← 저장된 로그 재생 검증 (pytest용 아님, 직접 실행)
 │  └─ question_bank.csv   ← 질문 은행 15문항
 ├─ firmware/              ← ESP32 펌웨어 (KITEL_MAIN_V5, 소스 추가 필요)
-├─ server/                ← 새로 만드는 Python 서버
-│  ├─ app.py              ← FastAPI, WebSocket, 정적 파일 서빙
-│  ├─ source/             ← 입력원: serial_source.py, replay_source.py, dummy_source.py
-│  ├─ pipeline/           ← 품질 검사, 기준값, 특징 추출
-│  ├─ judges/             ← base.py, dummy.py, rule.py, logreg.py
-│  ├─ reasons.py          ← 기여도 → 이유 문장
-│  ├─ storage.py          ← 기록 저장 (source 표시)
-│  └─ models/             ← model.json (학습 결과)
+├─ server/                ← Python 서버 (M2에서 구현)
+│  ├─ app.py              ← FastAPI, /ws 방송, web/dist 정적 서빙, 입력원 스레드
+│  ├─ config.py           ← 환경 변수 설정 (상단에 전체 표)
+│  ├─ cli.py              ← 명령줄 도구: parse, replay, dummy, bpm, ports (모두 읽기 전용)
+│  ├─ result.py           ← 시도 하나 판정 → trial_result (PRD 9절 형식)
+│  ├─ reasons.py          ← 기여도/보류 코드 → 쉬운 한국어 문장
+│  ├─ stream.py           ← sample_batch(그래프 샘플 묶음), baseline_result
+│  ├─ source/
+│  │  ├─ lines.py         ← 기기 줄 해석기 (collector 상수·함수 재사용, 파일 안 씀)
+│  │  ├─ pacing.py        ← 재생 속도 맞춤 (목표 시각 방식)
+│  │  ├─ replay_source.py ← raw_serial_log.txt 재생 (읽기 전용, source=hardware)
+│  │  ├─ dummy_source.py  ← 기기 형식의 합성 줄 (source=dummy)
+│  │  └─ serial_source.py ← COM 포트 읽기 전용 (DTR/RTS 끔, 끊기면 재연결)
+│  ├─ pipeline/
+│  │  ├─ tracker.py       ← 세션/기준/시도 추적 (collector Run과 같은 상태 규칙)
+│  │  ├─ features.py      ← 국소 dz
+│  │  ├─ quality.py       ← 최소 품질 검사 (보류 코드)
+│  │  └─ bpm.py           ← IR 심박 추정 (화면 표시용, 판정에 안 씀)
+│  └─ judges/
+│     ├─ base.py          ← Contribution, Verdict, Judge, 라벨 키 거부
+│     └─ rule.py          ← RuleJudge
 ├─ web/                   ← 기존 Truthpulse_Game 화면
 │  ├─ dist/               ← 정적 화면 (빌드 없음, 소스이자 배포 루트)
-│  ├─ tests/              ← core.mjs 단위 테스트 (npm test)
+│  │  ├─ index.html, styles.css, core.mjs (기존 데모)
+│  │  ├─ app.mjs          ← 기존 데모 + 기기 연동 모드 (/ws 연결 시)
+│  │  └─ live.mjs         ← /ws 연결, 자동 재연결, 화면용 순수 함수
+│  ├─ tests/              ← core.test.mjs, live.test.mjs (npm test)
 │  ├─ package.json
 │  └─ server.mjs          ← 예전 웹 단독 개발용 서버 (아래 참고)
-├─ training/              ← 학습 스크립트 (실측 데이터만 읽음)
-├─ tests/                 ← pytest
+├─ training/              ← 학습 스크립트 (미구현, 실측 데이터만 읽게 할 것)
+├─ tests/                 ← pytest (test_lines, test_tracker, test_sources, test_features, test_quality,
+│                            test_judges, test_reasons, test_app, test_stream, test_serial_source, test_bpm, test_env)
 └─ data/                  ← 깃에 올리지 않음
    ├─ real/               ← 실측 (읽기 전용). 수집기 기록이 여기 있다
-   └─ dummy/              ← 더미
+   └─ dummy/              ← 더미 (현재 서버는 아무것도 저장하지 않으므로 쓰지 않는다)
 ```
 
-`web/server.mjs`는 예전 웹 프로토타입을 혼자 띄우던 개발용 정적 서버다(`npm run dev`, 포트 4173, 가상 신호만 사용). 최종 실행은 Python 서버(`server/app.py`)가 `web/dist`를 서빙하는 방식으로 하며, 기기 연동과 WebSocket은 Python 서버에서만 동작한다.
+아직 없는 것: `server/storage.py`(기록 저장, I6), `server/models/model.json`과 `server/judges/logreg.py`(M6), `server/judges/dummy.py`(RuleJudge를 먼저 만들어 필요 없어짐, 6절).
 
-## 3. 개발 환경과 실행 (Windows)
+`web/server.mjs`는 예전 웹 프로토타입을 혼자 띄우던 개발용 정적 서버다(`npm run dev`, 포트 4173, 가상 신호만 사용). `/ws`가 없으므로 웹은 기존 데모 모드로 동작한다. 기기 연동은 Python 서버(`server/app.py`)가 `web/dist`를 같은 포트로 서빙할 때만 동작한다.
 
-Python 3.13, Node 24 기준이다. 가상환경은 활성화하지 않고 `.venv\Scripts\python.exe -m ...` 형태로 직접 부른다 (PowerShell 실행 정책 문제를 피한다).
+## 3. 개발 환경과 실행 (Windows, PowerShell)
+
+Python 3.13, Node 24 기준이다. 가상환경은 활성화하지 않고 `.venv\Scripts\python.exe -m ...` 형태로 직접 부른다 (PowerShell 실행 정책 문제를 피한다). 아래 명령은 모두 저장소 루트에서 실행한다.
 
 처음 한 번:
 
@@ -83,32 +106,54 @@ py -3.13 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-`pandas`는 **3 미만으로 고정**한다 (`pandas<3`, 현재 2.3.3). 기존 수집·분석 코드와 같은 동작을 유지하려는 선택이며, `tests/test_env.py`가 이를 확인한다. pandas 3으로 올릴 때는 M1 이후 `collector/`를 재검증하고 이 테스트를 고친다.
+`pandas`는 **3 미만으로 고정**한다 (`pandas<3`, 현재 2.3.3). 기존 수집·분석 코드와 같은 동작을 유지하려는 선택이며, `tests/test_env.py`가 이를 확인한다. pandas 3으로 올릴 때는 M1 이후 `collector/`를 재검증하고 이 테스트를 고친다. M2의 서버는 새 패키지 없이 requirements의 fastapi, uvicorn, websockets, numpy, scipy, pyserial만 쓴다 (httpx는 없으므로 서버 테스트는 임시 uvicorn + websockets 클라이언트로 한다).
 
 `requirements.txt`를 새로 만들 때는 파일이 UTF-16으로 저장되지 않게 주의한다 (PowerShell 5.1의 `>`는 UTF-16으로 저장하므로 `Out-File -Encoding ascii`를 쓴다).
 
-서버 실행 (설계 결정: Python 서버가 `web/dist`를 같이 서빙한다. 같은 포트라 CORS 설정이 필요 없다):
+### 3.1 서버 실행
+
+Python 서버가 `web/dist`를 같이 서빙한다 (같은 포트라 CORS 설정이 필요 없다). 브라우저: http://127.0.0.1:8000 . 끌 때는 Ctrl+C.
+
+| 입력원 | 명령 | 화면의 입력원 이름 |
+|---|---|---|
+| 더미 (합성 신호) | `$env:SOURCE="dummy"; $env:DUMMY_SPEED="2"; .venv\Scripts\python.exe -m uvicorn server.app:app --port 8000` | 합성 신호(더미) |
+| 재생 (저장된 로그) | `$env:SOURCE="replay"; $env:REPLAY_RUN="data\real\experiments\run_20261103_161545"; $env:REPLAY_SPEED="4"; .venv\Scripts\python.exe -m uvicorn server.app:app --port 8000` | 저장된 로그 재생 |
+| 시리얼 (기기) | `$env:SOURCE="serial"; $env:SERIAL_PORT="COM6"; .venv\Scripts\python.exe -m uvicorn server.app:app --port 8000` | 실시간 기기 / 기기 연결됨 · 신호 대기 / 기기 연결 끊김 |
+
+- 환경 변수 전체 목록과 기본값은 `server/config.py` 상단 표에 있다. 주요 값: `REPLAY_MAX_WAIT`(세션 사이 공백 단축, 기본 2초), `DUMMY_TRIALS`, `DUMMY_PATTERNS`(calm, reactive, poor), `SERIAL_BAUD`(기본 115200, `collector/record_session.py`의 `--baud` 기본값), `SERIAL_RETRY_SEC`(1~2초), `SERIAL_IDLE_SEC`(기본 5초), `SAMPLE_BATCH_SEC`(0.2~0.5초), `BPM_INTERVAL_SEC`(0.5~1초).
+- PowerShell의 `$env:` 값은 그 창을 닫을 때까지 남는다. 다른 입력원으로 바꿀 때는 값을 다시 지정하거나 `Remove-Item Env:SOURCE`로 지운다.
+- 재생과 더미는 화면에 "실시간"으로 표시하지 않는다. serial은 기기 줄을 실제로 받는 동안만 `live=true`("실시간 기기")다.
+- 서버는 파일을 쓰지 않는다. `data/dummy/`도 만들지 않는다 (기록 저장은 미구현, I6).
+
+### 3.2 시리얼(기기) 사용 시 주의
+
+- COM 포트는 한 프로그램만 열 수 있다. 수집기, 서버, Arduino 시리얼 모니터를 동시에 열지 않는다.
+- 서버는 포트를 열기 전에 DTR/RTS를 꺼서 ESP32가 재부팅되지 않게 한다 (수집기는 반대로 DTR을 토글해 일부러 재부팅한다). 실제 보드에서 재부팅이 막히는지는 아직 확인 기록이 없다 (I11). 재부팅되면 진행 중인 시도는 INTERRUPTED로 닫히고 "답변 중에 기기가 다시 시작돼서…"로 보류된다.
+- 재부팅하지 않으므로 헤더 줄이 오지 않을 수 있고, 이때는 줄 해석기의 `fallback_v5` 규칙을 쓴다.
+- **서버를 먼저 켜고 기기에서 세션을 시작한다.** 세션 도중에 서버를 켜면 그 세션의 `SESSION START`를 놓쳐 다음 세션까지 그래프·판정이 나오지 않는다 (I12).
+- 포트 목록(포트를 열지 않음): `.venv\Scripts\python.exe -m server.cli ports`
+
+### 3.3 명령줄 도구 (모두 읽기 전용)
 
 ```
-.venv\Scripts\python.exe -m uvicorn server.app:app --reload --port 8000
+.venv\Scripts\python.exe -m server.cli parse  data\real\experiments\run_20261103_161545
+.venv\Scripts\python.exe -m server.cli replay data\real\experiments\run_20261103_161545 --speed 0 --brief --judge
+.venv\Scripts\python.exe -m server.cli replay data\real\experiments\run_20261103_161545 --speed 0 --judge --json
+.venv\Scripts\python.exe -m server.cli dummy  --trials 4 --patterns calm,reactive,poor,calm --speed 0 --judge
+.venv\Scripts\python.exe -m server.cli bpm    data\real\experiments\run_20261103_161545
+.venv\Scripts\python.exe -m server.cli ports
 ```
 
-브라우저: http://127.0.0.1:8000
+`--fsr-th`, `--gsr-th`, `--min-sensors`는 임계값 후보를 비교하는 탐색용이며 `rule.py`의 상수를 바꾸지 않는다.
 
-입력원 선택 (환경 변수 또는 실행 인자):
-
-| 모드 | 용도 |
-|---|---|
-| `dummy` | 합성 신호. 하드웨어 없이 화면과 흐름 개발 |
-| `replay` | `data/real`의 `raw_serial_log.txt` 재생. 실제 신호로 전처리 디버깅 |
-| `serial` | 기기 직접 연결 (COM 포트, 속도 115200, 포트 번호는 환경에 맞게) |
-
-테스트:
+### 3.4 테스트
 
 ```
 .venv\Scripts\python.exe -m pytest
-cd web && npm test
+cd web; npm test
 ```
+
+2026-11-04 기준 pytest 165개, npm test 23개 통과. 실측 로그가 없으면 해당 테스트는 건너뛴다. 서버 테스트는 127.0.0.1의 빈 포트에 임시 uvicorn을 띄우고, 시리얼 테스트는 가짜 시리얼만 써서 실제 COM 포트를 열지 않는다.
 
 수집기 테스트는 따로 실행한다 (현재 폴더 기준으로 `experiments/`를 찾으므로 11절 I8 참고):
 
@@ -116,34 +161,41 @@ cd web && npm test
 .venv\Scripts\python.exe collector\test_replay.py
 ```
 
-서버는 시작할 때 `data/dummy/`가 없으면 자동으로 만든다 (`data/`가 gitignore 대상이라 새로 받은 저장소에는 폴더가 없다). `data/real/`은 만들거나 쓰지 않는다. 기기(serial)로 받은 기록의 저장 위치는 11절 I6에서 정한다.
+### 3.5 화면 시험 방법 (사람이 확인)
 
-주의: COM 포트는 한 프로그램만 열 수 있다. 수집기와 서버, Arduino 시리얼 모니터를 동시에 열지 않는다. 포트를 열면 ESP32가 재부팅되는 것은 정상이다.
+1. 재생(4배속)으로 서버를 켜고 브라우저를 연다. 확인: 입력원 "저장된 로그 재생", 단계가 기준 측정 → 질문 중 → 답변 측정 중 → 결과로 바뀜, 세션 표시 "세션 S01" → "세션 S01 · 종료" → "세션 S02", 결과 카드에 진실/거짓/보류, 이유, "모델 미학습(데모)", 임계값 안내, 오락용 안내, 보류 사유(예: "손 위치가 바뀌어 이 답변은 측정에서 제외했어요."), PPG 카드의 "BPM 추정값".
+2. 새로고침해도 지금까지의 결과, 그래프, 마지막 심박 추정값이 다시 채워지는지 본다.
+3. 서버를 Ctrl+C로 끄면 주황색 "연결이 끊겼습니다" 띠, 다시 켜면 자동 재연결.
+4. 더미로 한 번 더 확인 (입력원 "합성 신호(더미)", calm 시도 심박 약 72).
+5. 기기: 3.2절 주의를 지키고 시리얼로 켠다. 한 사이클, 답변 중 손 위치 바꾸기(접촉 보류), 5초 이상 대기("신호 대기"), USB 뽑았다 꽂기(오류 띠와 재연결), 없는 포트(COM99) 오류 표시를 확인한다.
+6. `npm run dev`(포트 4173)로 예전 데모가 그대로 동작하는지 본다.
 
-## 4. 아키텍처
+## 4. 아키텍처 (구현됨)
 
 현재 구조는 **기기 주도, PC 읽기 전용**이다.
 
 ```
-[ESP32 + 센서 + 버튼 + LED/OLED] ──COM 포트 50Hz──▶ [입력원: serial / replay / dummy]
+[ESP32 + 센서 + 버튼 + LED/OLED] ──COM 포트 50Hz──▶ [입력원: serial / replay / dummy]  (모두 기기와 같은 줄 형식)
       ▲ 버튼으로 진행 (PC는 아무것도 보내지 않음)            │
                                                           ▼
-                                    품질 검사 ─▶ 기준값 ─▶ 특징 추출
+                                        줄 해석기 (collector 상수·규칙 재사용)
                                                           │
+                              ┌───────────────────────────┼──────────────────────────┐
+                              ▼                           ▼                          ▼
+                     샘플 묶음 (그래프)          진행 추적기 (세션/기준/시도)       심박 추정 (IR, 표시용)
+                              │                           │ 시도 끝                   │
+                              │                           ▼                          │
+                              │              국소 dz → 품질 검사 → RuleJudge → 이유   │
+                              │                           │                          │
+                              └──────────────▶ WebSocket /ws 방송 ◀───────────────────┘
                                                           ▼
-                                                 [교체식 판정기] dummy → rule → logreg
-                                                          │
-                                                          ▼
-                                                     이유 생성
-                                                          │
-                                    WebSocket ◀───────────┘
-                                         ▼
-                        [웹: 단계 표시, 그래프, 결과, 이유]  (보기 전용)
+                        [웹: 입력원, 단계, 세션, 그래프, 결과 카드, 이유, 배지, 심박 추정값]  (보기 전용)
 ```
 
-실험 모드는 기존 `collector/record_session.py`가 같은 입력을 받아 저장하는 방식을 그대로 쓴다.
-
-최종 단계(PRD F12)에서는 검증된 전처리·계수·임계값을 펌웨어로 옮기고 Python은 분석·재학습·검증에 쓴다. 이때 기기가 판정 결과를 PC로 보내는 줄 형식을 새로 정해야 하며, 펌웨어 담당자와 함께 정한다.
+- 입력원은 별도 스레드에서 돌고, 메시지는 이벤트 루프로 넘겨 접속자 전원에게 방송한다. 새 접속자에게는 상태, 마지막 오류, 기준 측정, 마지막 단계, 마지막 심박 추정값, 최근 약 20초의 샘플, 지금까지의 시도 결과(최대 200개)를 먼저 보낸다.
+- 심박 추정값은 판정 경로와 분리되어 있다 (판정 코드에서 쓰지 않음을 테스트로 확인).
+- 실험 모드(데이터 수집)는 기존 `collector/record_session.py`를 그대로 쓴다. 서버와 같은 포트를 동시에 열 수 없다.
+- 최종 단계(PRD F12)에서는 검증된 전처리·계수·임계값을 펌웨어로 옮기고 Python은 분석·재학습·검증에 쓴다. 이때 기기가 판정 결과를 PC로 보내는 줄 형식을 새로 정해야 하며, 펌웨어 담당자와 함께 정한다.
 
 ## 5. 데이터 계약
 
@@ -159,24 +211,30 @@ time_ms,fsr,gsr,ir,red,phase,trial,session,baseline_id,seq,contact
 
 예: `62441,773,2233,105696,90223,BASELINE,0,1,1,3095,1`
 
-- `phase`: `BASELINE`, `READY`, `QUESTION`, `RESPONSE`
+- `phase`: `BASELINE`, `READY`, `QUESTION`, `RESPONSE`. `PLACE_HAND`, `ANALYZING`, `RESULT` 단계에는 샘플을 보내지 않는다 (실측 로그에서 확인).
 - 기준 측정 약 15초, 답변 구간 약 20초 (`record_session.py`의 `EXPECTED_MS`)
-- 샘플 간격 20ms, 허용 간격 상한 `GAP_LIMIT_MS=30` (11절 I1 참고)
+- 샘플 간격 20ms, 허용 간격 상한 `GAP_LIMIT_MS=30`. 실측에서는 36~40ms 간격이 시도마다 나와 모든 시도가 `integrity=CHECK`다 (I10). 이 경고는 상태(COMPLETE/ABORTED)에 영향이 없다.
 
 **이벤트**: `#EVENT,<esp_time_ms>,<이름>,<trial>,<detail>,<session>,<baseline_id>`
 
 실험 로그에서 확인된 이름: `BUTTON`, `PLACE_HAND`, `HAND_OK`, `HAND_LOST`, `SESSION`, `SESSION_END`, `BASELINE`, `BASELINE_LOST`, `READY`, `QUESTION`, `RESPONSE`, `ANALYZING`, `RESULT`, `CONTACT_DIP`, `CONTACT_SHIFT`, `CONTACT_BACK`, `ABORTED`, `INVALID`.
 
-버튼 `detail`은 `<단계>:<PRESS|SHORT|LONG>:<동작>:<IRQ|POLL>` 형식이다. 예: `PLACE_HAND:PRESS:START_SESSION`, `READY:PRESS:QUESTION`, `QUESTION:PRESS:ANSWER`, `RESULT:SHORT:NEXT_QUESTION`, `RESULT:LONG:END_SESSION`, `PLACE_HAND:SHORT:REBASELINE`, `RESPONSE:SHORT:IGNORED_TIMED_PHASE`.
+- 세션 밖의 `PLACE_HAND`(세션 시작 전, 끝난 뒤)는 세션 번호 0으로 온다. 서버는 화면에 기기 번호 대신 추적기의 세션 순번(S01, S02)을 보낸다.
+- 세션 종료: `#EVENT,…,SESSION,<trial>,END:LONG_PRESS,…`
+
+버튼 `detail`은 `<단계>:<PRESS|SHORT|LONG>:<동작>:<IRQ|POLL>` 형식이다. 예: `PLACE_HAND:PRESS:START_SESSION`, `READY:PRESS:QUESTION`, `QUESTION:PRESS:ANSWER`, `RESULT:SHORT:NEXT_QUESTION`, `RESULT:LONG:END_SESSION`, `PLACE_HAND:SHORT:REBASELINE`, `RESPONSE:SHORT:IGNORED_TIMED_PHASE`, `READY:PRESS:IGNORED_NO_HAND`, `ABORTED:SHORT:NEED_REBASELINE`.
 
 **요약**: 기준 측정과 시험이 끝날 때 한 줄씩.
 
-- `#BASELINE,` + `session, baseline_id, valid, reason, warn_flags, n, fsr_mean, fsr_sd, gsr_mean, gsr_sd, ir_mean`
-- `#SUMMARY,` + `session, baseline_id, trial, valid, reason, warn_flags, bl_n, bl_fsr_mean, bl_fsr_sd, bl_gsr_mean, bl_gsr_sd, bl_ir_mean, q_n, q_ms, rs_n, rs_fsr_mean, rs_fsr_sd, rs_gsr_mean, rs_gsr_sd, rs_ir_mean, fsr_dz, gsr_dz`
-- `nan` 값이 올 수 있고, `reason`에 `HAND_OFF_LONG` 같은 사유가 들어간다.
-- 경고 비트: `LOW_SAMPLES`, `LOW_IR`, `FSR_SAT`, `GSR_SAT`, `CONTACT_DIP`, `PPG_OVERFLOW`
+- `#BASELINE,` + `session, baseline_id, valid, reason, warn_flags, n, fsr_mean, fsr_sd, gsr_mean, gsr_sd, ir_mean` (다음 시도의 `READY START` 직후에 온다)
+- `#SUMMARY,` + `session, baseline_id, trial, valid, reason, warn_flags, bl_n, bl_fsr_mean, bl_fsr_sd, bl_gsr_mean, bl_gsr_sd, bl_ir_mean, q_n, q_ms, rs_n, rs_fsr_mean, rs_fsr_sd, rs_gsr_mean, rs_gsr_sd, rs_ir_mean, fsr_dz, gsr_dz` (`ANALYZING START`와 `RESULT START` 사이에 온다)
+- **기기 dz 식 (실측으로 확인):** `fsr_dz = (rs_fsr_mean - bl_fsr_mean) / bl_fsr_sd`, `gsr_dz`도 같다. 예: 161545 T02 (2007.84 - 2205.74) / 62.98 = -3.142.
+- `nan` 값이 올 수 있고, `reason`에 `HAND_OFF_LONG`, `HAND_LIFTED` 같은 사유가 들어간다.
+- 경고 비트: 1 `LOW_SAMPLES`, 2 `LOW_IR`, 4 `FSR_SAT`, 8 `GSR_SAT`, 16 `CONTACT_DIP`, 32 `PPG_OVERFLOW`. 실측에 목록에 없는 비트 64가 나온다 (I13).
+- 헤더 줄(`#SUMMARY_HEADER`, `#BASELINE_HEADER`)은 부팅 때만 온다. 없으면 필드 수가 맞을 때 `KITEL_MAIN_V5` 고정 헤더로 해석한다 (collector와 같은 폴백).
+- 기기가 크래시하면 `Guru Meditation Error` 레지스터 덤프 줄이 섞인다. 해석기는 이 줄을 해석 불가로 세고 넘어간다.
 
-서버의 입력원은 `collector/record_session.py`의 줄 해석 코드를 **새로 짜지 않고 재사용**한다. 구조가 어긋나지 않게 하려는 규칙이다.
+서버의 줄 해석기(`server/source/lines.py`)는 `collector/record_session.py`의 상수·함수(`FW_SAMPLE_HEADER`, `SUMMARY_HEADER_V5`, `BASELINE_HEADER_V5`, `WARN_BITS`, `warn_names`, `check_segment` 등)를 import해서 그대로 쓰고, 줄 판별 순서·폴백·필드 위치를 `Run`과 같게 둔다. `Run`은 해석하면서 파일을 쓰므로 직접 부르지 않는다. 실측 로그 4개에서 `recover_data.parse_raw_log`와 결과가 같고, 진행 추적기의 시도 상태가 collector `Run`과 같음을 테스트로 확인한다.
 
 ### 5.2 PC 저장 구조 (수집기, 변경 금지)
 
@@ -191,36 +249,37 @@ data/real/experiments/run_<날짜시각>/
 
 시험 샘플 CSV 열: `session_id, participant_id, trial_id, baseline_id, question_id, condition, time_ms, fsr, gsr, ir, red, phase, seq, contact`
 
-### 5.3 서버 ↔ 웹 (WebSocket, 보기 전용)
+서버는 `protocol.csv`(라벨 포함)를 읽지 않는다.
 
-서버 → 웹:
+### 5.3 서버 ↔ 웹 (WebSocket `/ws`, 보기 전용, 구현됨)
+
+서버 → 웹 (JSON, nan 없음):
 
 | type | 내용 |
 |---|---|
-| `device_status` | 연결 여부, 입력원(source) |
-| `phase_update` | 현재 단계, 이벤트(손 접촉, 접촉 문제, 취소 등) |
-| `sample_batch` | 순번, 시간, 원시 채널 값, 품질 플래그 |
-| `baseline_result` | 기준 평균/표준편차, 채널별 품질 |
-| `trial_result` | PRD 9절의 판정 결과 형식 |
-| `error` | 재시도 가능 여부와 사용자용 설명 |
+| `device_status` | `input`(dummy/replay/serial), `input_label`, `live`, `source`(dummy/hardware), `connected`, `finished`, `message`, `port`, `replay_run` |
+| `phase_update` | `phase`(단계 변화) 또는 `event`(손 접촉, 접촉 문제, 무효, 세션 시작/종료, 재부팅), `trial`, `esp_session`, `session_index`, `session_active` |
+| `sample_batch` | 그래프용 원시 샘플. 열 단위 배열(`time_ms, fsr, gsr, ir, red, phase, trial, seq, contact`), 2개 중 1개(25Hz), 0.25초마다, 묶음당 최대 100개(`dropped`에 버린 수) |
+| `baseline_result` | 기준 측정 평균/표준편차, 상태, 경고, 표준편차 하한 적용 여부 |
+| `bpm_update` | 심박 추정값 `bpm`(없으면 null), `estimate: true`, `reason`, `reason_text`, 1초마다 |
+| `trial_result` | PRD 9절 형식 + `judge_note`, `disclaimer`, `hold_code`, `device_status`. 서버 전용 항목(`server_only`, 예: 알 수 없는 경고 비트)은 빼고 보낸다 |
+| `error` | `retryable`, 사용자용 `message` |
 
-웹 → 서버 (요청 ID 포함, 기기 제어 없음): `set_mode {dummy|replay|serial}`, `new_session {participant}` (서버 내부에서만 사용)
+웹 → 서버: **미구현.** 받은 메시지는 모두 무시한다 (보기 전용). 예전 설계의 `set_mode`, `new_session`은 만들지 않았다. 입력원은 서버 환경 변수로만 정한다.
 
 ### 5.4 저장 규칙
 
-- `source`: `dummy` 또는 `hardware`로 고정
+- `source`: `dummy` 또는 `hardware`로 고정 (재생과 시리얼은 `hardware`)
 - 필수 키: `participant_id`, `session_id`, `trial_id`, 기기 시각(`time_ms`), 서버 수신 시각
 - 원시 IR/Red/GSR/FSR 값과 품질 플래그를 보관한다.
 - `ground_truth`는 실험 기록에만 둔다.
 - 학습되지 않은 상태에서는 `model_version`, `score`를 null로 둔다.
+- **현재 서버는 기록을 저장하지 않는다 (I6).** 서버 전용 경고는 서버 콘솔 로그와 명령줄 출력에만 남는다. 데이터 수집은 수집기를 쓴다. 웹의 기록/내보내기 페이지는 예전 데모 기록만 다룬다.
 
 ## 6. 판정기 인터페이스
 
 ```python
 # server/judges/base.py
-from dataclasses import dataclass, field
-from typing import Protocol, Optional
-
 @dataclass
 class Contribution:
     sensor: str          # "ppg" | "gsr" | "fsr"
@@ -235,8 +294,8 @@ class Verdict:
     trained: bool
     judge_name: str
     judge_version: str
-    contributions: list[Contribution] = field(default_factory=list)
-    hold_reason: Optional[str] = None
+    contributions: list = field(default_factory=list)
+    hold_reason: Optional[str] = None   # 보류 코드 (문장은 reasons.py)
 
 class Judge(Protocol):
     name: str
@@ -245,95 +304,168 @@ class Judge(Protocol):
     def judge(self, features: dict, baseline: dict, quality: dict) -> Verdict: ...
 ```
 
-구현 순서:
+입력(중첩 포함)에 라벨 키(`ground_truth`, `condition`, `planned_condition`, `marked_lie`, `label`, `confirmed`)가 있으면 `ValueError`를 낸다.
 
-1. `DummyJudge`: 고정된 가짜 계수. 흐름과 화면 확인용. `trained=False`.
-2. `RuleJudge`: 개인 기준 대비 z-score가 임계값을 넘은 센서의 수와 크기로 판정. 시연 예비안. 임계값은 설정 파일에서 읽는다. `trained=False`.
-3. `LogregJudge`: `server/models/model.json`을 읽는다. 내용은 특징 순서, 정규화 값, 계수, 절편, 임계값, 필터 설정, 버전이다. 학습 파이프라인이 만든다. 기획서대로 로지스틱 회귀이며 `fit()`, `predict_proba()`를 쓴다.
+구현 상태:
 
-판정기 선택은 설정 한 줄(`JUDGE=dummy|rule|logreg`)로 바꾼다. 입력에 라벨이 있으면 오류를 낸다.
+1. `DummyJudge`: **만들지 않았다.** 사용자 결정으로 고정 가짜 계수 대신 RuleJudge를 먼저 만들었다 (2026-11-04).
+2. `RuleJudge` (`server/judges/rule.py`, **구현됨**): `name="rule"`, `version="0.0.1"`, `trained=False`, `score=None`.
+   - 입력 특징은 **국소 dz**(`fsr_local_dz`, `gsr_local_dz`)뿐이다. 기기 dz(`fsr_dz`, `gsr_dz`)는 표시용으로만 함께 보낸다.
+   - |국소 dz| ≥ 임계값인 센서가 `MIN_SENSORS_OVER`개 이상이면 `lie`, 아니면 `truth`. 품질 보류, 특징 nan, 임계값 미설정(None)이면 `inconclusive`.
+   - 임계값: `FSR_LOCAL_DZ_THRESHOLD = 3.0`, `GSR_LOCAL_DZ_THRESHOLD = 3.0`, `MIN_SENSORS_OVER = 1`. **통계에서 흔히 쓰는 관례(3σ)로 정한 값이며 라벨 데이터로 맞추거나 검증하지 않았다.** 이 안내를 상수 주석과 화면(`judge_note`)에 둔다.
+   - 기여도 = |값| / 임계값 (1 이상이면 임계값을 넘음). 이유 문장은 실제로 임계값을 넘은 센서만 말한다.
+   - 임계값은 설정 파일이 아니라 코드 상수다 (M5의 "설정 파일"은 미구현).
+3. `LogregJudge`: **미구현 (M6).** `server/models/model.json`(특징 순서, 정규화 값, 계수, 절편, 임계값, 필터 설정, 버전)을 읽게 한다. 기획서대로 로지스틱 회귀.
+
+판정기 선택: `JUDGE=rule` (현재 rule만 허용).
 
 ## 7. 전처리와 특징 추출
 
-전처리 시작값은 `collector/analyze_data.py`를 따른다.
+전처리 시작값은 `collector/analyze_data.py`를 따른다 (원시 샘플 필터링 특징은 아직 미구현).
 
 | 센서 | 처리 |
 |---|---|
 | FSR | 5샘플 중앙값 + 5Hz 저역통과 |
 | GSR | 5샘플 중앙값 + 1Hz 저역통과 |
-| PPG | 0.5~5Hz 대역통과 (초기 실험용 범위) |
+| PPG | 0.5~5Hz 대역통과 (초기 실험용 범위). 심박 추정은 40~200 BPM(0.67~3.33Hz) 대역통과 |
 
-실시간 경로에서는 인과적 필터만 쓴다. `filtfilt`는 분석용이다. 샘플링 속도는 기기 시각으로 추정한다 (`fs = (샘플 수 - 1) / 측정 시간`).
+실시간 경로에서는 인과적 필터만 쓴다 (`sosfilt`). `filtfilt`는 분석용이다. 샘플링 속도는 기기 시각으로 추정한다 (`fs = (샘플 수 - 1) / 측정 시간`).
 
-특징 후보 (처음에는 6개 안팎):
+### 7.1 구현된 특징: 국소 dz (`server/pipeline/features.py`)
+
+국소 dz = (같은 시도의 RESPONSE 평균 − QUESTION 평균) / max(기기 요약의 `bl_*_sd`, 하한)
+
+- 하한: `FSR_SD_FLOOR = 20`, `GSR_SD_FLOOR = 5` (ADC 단위, 임시값). `MIN_QUESTION_SAMPLES = 50` (1초). 짧으면 보류.
+- 왜: 기기 dz는 세션이 길어질수록 한 방향으로 커지는 추세가 있었다 (161545의 유효 시도 10개가 3.0σ 기준으로 모두 거짓이 되는 수준). 국소 dz는 바로 앞의 질문 구간을 기준으로 삼아 이 추세를 **줄이지만 없애지는 못한다.** 실측 4개 로그에서 기울기 절대값은 12칸 중 11칸, 범위는 12칸 중 10칸에서 줄었지만, 국소 GSR은 시도 순서와의 상관 |r| 0.60~0.99로 방향성이 남는다.
+- 실측 유효 시도 35개의 국소 |dz| 중앙값: FSR 0.93, GSR 0.77 (기기 dz는 3.69, 4.03). FSR의 큰 값 5개 중 2개는 `CONTACT_SHIFT`, 3개는 구간 안의 큰 압력 변동이었다.
+- 질문 구간이 좋은 기준인지는 모른다 (질문을 듣는 동안의 긴장이 섞일 수 있음).
+
+### 7.2 최소 품질 검사 (`server/pipeline/quality.py`)
+
+보류 코드(앞에서부터): `DEVICE_RESET`(시도 중 재부팅), `NO_SUMMARY`, `DEVICE_INVALID:<사유>`, `Q_TOO_SHORT`, `NO_RESPONSE`, `BL_SD_MISSING`, `CONTACT_EVENT:<이벤트>`.
+
+- `HOLD_ON_CONTACT_EVENTS = True`: QUESTION 시작~RESPONSE 끝 사이에 `CONTACT_SHIFT`, `CONTACT_DIP`, `HAND_LOST`, `BASELINE_LOST`가 있으면 보류한다. READY나 RESULT 단계의 접촉 변화는 보류하지 않는다.
+- 경고 비트는 경고로만 남긴다. 알 수 없는 비트(`UNKNOWN_WARN_BITS`)는 화면에 보이지 않는다.
+- 화면 문장은 쉬운 말로 쓴다 (예: "손 위치가 바뀌어 이 답변은 측정에서 제외했어요."). 코드는 `hold_code`에 따로 남는다.
+- 원시 샘플 검사(`check_segment` 재사용: 결측, 역순, 끊김, 포화, 접촉 0)를 판정 보류에 쓰는 것은 미구현이다. TIME_GAPS는 보류가 아니라 경고로 둘 계획이다.
+
+### 7.3 심박 추정값 (`server/pipeline/bpm.py`, 화면 표시용)
+
+- 최근 12초(앞 2초는 필터 안정용) 중 마지막 10초, 40~200 BPM 대역통과, 맥박 방향 2가지 × 피크 돌출도 기준 2가지 후보 중 간격이 고른(변동계수 ≤ 0.15) 후보 가운데 피크가 가장 많은 것, 평균 간격으로 BPM.
+- 값을 내지 않는 경우(화면 "—"와 이유): 신호를 모으는 중, 손 접촉 없음, 센서 신호가 약함(IR 중앙값 < 50,000), 맥박 신호가 약함(필터 후 표준편차 < 20), 맥박을 충분히 찾지 못함, 맥박 간격이 불규칙함, 범위를 벗어난 값, 측정 구간이 아님.
+- 기준값은 임시값이다. 신호 크기 기준은 실측 로그의 크기로, 변동계수 기준은 합성 신호 시험(0.25에서는 60개 중 10개 오차, 0.15에서는 0개)으로 정했다. **정답 심박과 비교하지 않았다 (I14).**
+- 합성 신호(잡음, 호흡성 흔들림, 둘째 봉우리 포함)에서 50~150 BPM을 ±2 이내로 맞히고, 맥박 없는 신호에서는 값을 내지 않음을 테스트로 확인한다.
+- 실측 161545: 1초마다 307회 중 값 97회(57.3~80.6 BPM, 중앙값 72.2), 불규칙 73회, 신호를 모으는 중 132회. 시도마다 12초가 다시 모여야 하므로 값은 주로 질문 후반과 답변 구간에 나온다.
+- **판정(RuleJudge)에 쓰지 않는다.** `hr_delta` 같은 심박 특징은 정답 비교와 라벨 데이터가 생긴 뒤 검토한다.
+
+### 7.4 특징 후보 (미구현, M6 전에 검토)
 
 | 특징 | 출처 |
 |---|---|
-| `hr_delta` | IR 피크 기반 (`collector/calculate_bpm.py` 참고) |
+| `hr_delta` | IR 피크 기반 (7.3의 추정기, 검증 후) |
 | `ppg_amp_delta` | 필터된 IR 진폭 |
-| `gsr_max_change`, `gsr_dz` | 답변 구간 vs 기준 / 기기 요약 |
-| `fsr_mean_delta`, `fsr_sd_ratio`, `fsr_dz` | 답변 구간 vs 기준 / 기기 요약 |
+| `gsr_max_change` | 답변 구간 vs 기준 |
+| `fsr_mean_delta`, `fsr_sd_ratio` | 답변 구간 vs 기준 |
 | 반응 지속시간 | 기획서의 특징값 후보 |
 
-표준편차 하한과 z-score 클리핑 정책을 정한다 (I2). 학습 시 스케일링, 특징 선택, 하이퍼파라미터 조정은 학습 폴드 안에서만 한다.
+학습 시 스케일링, 특징 선택, 하이퍼파라미터 조정은 학습 폴드 안에서만 한다.
 
-## 8. 웹 (web/)
+## 8. 웹 (web/, 구현됨)
 
-- 기존 `Truthpulse_Game` 화면을 사용한다. 기록, CSV/JSON 내보내기, 20초 그래프, 접촉 불량 처리는 유지한다.
-- 바꿀 부분: `demoSample` 공급부를 WebSocket 어댑터로 교체한다. 기기 연동 모드에서는 `summarizeDemo`를 호출하지 않고 서버의 `trial_result`를 그대로 표시한다.
-- 기존의 세션 제어 버튼(기준 측정 시작, 질문 시작, 취소)은 기기 주도 구조에서는 서버로 보내지 않는다. 기기 단계를 따라가는 표시로 바꾼다.
-- 추가할 부분: 현재 단계 표시, 판정 결과 카드, 이유 목록, 센서별 기여도 막대, "모델 미학습(데모)" 배지, 입력원 표시.
+- 기존 `Truthpulse_Game` 화면을 그대로 쓴다. `/ws`에 처음 연결되면 기기 연동 모드로 바뀐다. 연결할 수 없으면(예전 데모 서버) 기존 데모 모드로 동작한다.
+- 기기 연동 모드에서는 `demoSample` 공급과 `summarizeDemo`를 멈추고, 세션 제어 버튼과 정답 입력칸을 숨기고, 기기 단계를 따라가는 표시로 바꾼다.
+- 표시: 입력원 이름(재생/더미/실시간 기기 구분), 세션 순번, 단계, 그래프(채널마다 정규화한 상대 크기), GSR/FSR 기준값, PPG 카드의 심박 추정값("BPM 추정값", 값이 없을 때만 "심박 계산 전"과 이유), 결과 카드(진실/거짓/보류, "모델 미학습(데모)" 배지, 판정 이유 또는 보류 사유, 센서별 막대(가운데 선 = 임계값), `judge_note`, `disclaimer`), 최근 판정 3개.
+- 재생·더미 화면에서는 "실시간"을 표시하지 않고, 손 올리기 단계에서는 "측정은 저장된 로그를 따라갑니다."(더미: "측정은 합성 신호를 따라갑니다.")로 바꾼다.
+- 연결이 끊기면 주황색 띠를 띄우고 1초부터 최대 5초 간격으로 자동 재연결한다. 재연결하면 서버가 상태와 기록을 다시 보내고, 같은 결과는 한 번만 표시한다.
+- 기기 연동 모드의 결과는 브라우저 기록 페이지에 저장하지 않는다 (기록/내보내기는 데모 기록만).
+- 브라우저 화면 확인은 사람이 한다 (자동 브라우저 테스트 없음).
 
 ## 9. 펌웨어 (firmware/)
 
 - 펌웨어 소스(KITEL_MAIN_V5)는 현재 저장소에 없다. 추가한 뒤 작업한다 (I3).
-- 확인할 것: LED/OLED 판정·표시 기준, 연결 방식, `ANALYZING`/`RESULT` 단계의 동작, 재부팅 원인.
+- 확인할 것: LED/OLED 판정·표시 기준, 연결 방식, `ANALYZING`/`RESULT` 단계의 동작, 재부팅 원인(I7), 경고 비트 64의 뜻(I13), DTR/RTS 동작(I11), 버튼 디바운스.
 - 샘플 출력 형식(5.1절)은 바꾸지 않는다.
 - 기기 판정 결과를 PC로 보내려면 줄 형식을 새로 정해야 한다 (F11, F12). 펌웨어 담당자와 협의한 뒤 정한다.
 
 ## 10. 테스트
 
-| 대상 | 방법 |
-|---|---|
-| 환경 | `pytest` (`tests/test_env.py`: 파이썬 버전, 패키지 임포트, pandas<3) |
-| 수집기 | `collector\test_replay.py` (저장된 로그 재생, 하드웨어 불필요) |
-| 줄 해석 | 샘플, `#EVENT`, `#BASELINE`, `#SUMMARY`, `nan` 처리 단위 테스트 |
-| 품질 검사, 기준값 | 결측, 역순, 끊김, 평평한 신호, 접촉 불량 |
-| 라벨 독립성 | 라벨을 바꿔도 특징과 판정이 같아야 한다 |
-| 판정기 | 세 판정기가 같은 입출력 형식을 지키는지 |
-| 이유 생성 | 기여도가 있는 경우와 보류 경우 문장 확인 |
-| 웹 | `npm test` + 브라우저에서 한 사이클 확인 |
-| 통합 | 더미 모드 10회 연속, replay 모드, 마지막에 장치 연결 |
+| 대상 | 방법 | 파일 |
+|---|---|---|
+| 환경 | 파이썬 버전, 패키지 임포트, pandas<3 | `tests/test_env.py` |
+| 수집기 | 저장된 로그 재생 (직접 실행) | `collector\test_replay.py` |
+| 줄 해석 | 샘플, `#EVENT`, `#BASELINE`, `#SUMMARY`(헤더/폴백/불일치), `nan`, 실측 4개를 `parse_raw_log`와 비교 | `tests/test_lines.py` |
+| 진행 추적 | 단계 순서, 실측 4개와 더미를 collector `Run`과 비교, 재부팅/INCOMPLETE | `tests/test_tracker.py` |
+| 입력원 | 재생 속도, 더미 형식·결정성·dz 식 | `tests/test_sources.py` |
+| 시리얼 | 가짜 시리얼: 줄 나누기, DTR/RTS 끄고 열기, 쓰기 0번, 끊김·재연결, 무신호, 재부팅 시 INTERRUPTED, 포트 목록 | `tests/test_serial_source.py` |
+| 특징, 품질 | 국소 dz 값과 하한, 짧은 질문, 실측 값 일치, 접촉 이벤트 정책, 경고 비트 | `tests/test_features.py`, `tests/test_quality.py` |
+| 라벨 독립성 | 라벨 키 거부, 라벨을 바꿔도 특징과 판정이 같음 | `tests/test_judges.py`, `tests/test_features.py` |
+| 판정기, 이유 | 임계값 경계, 보류, 넘은 센서만 언급, 쉬운 보류 문장, 실측 161545 회귀 | `tests/test_judges.py`, `tests/test_reasons.py` |
+| 심박 | 합성 50~150 BPM ±2, 신호 없음/약함/불규칙은 None, 판정 미사용, 실측 범위 | `tests/test_bpm.py` |
+| 서버 | 임시 uvicorn + websockets: 방송, 새 접속자 재전송, 샘플·심박 전송 간격, 재생 결과, 오류 | `tests/test_app.py`, `tests/test_stream.py` |
+| 웹 | 입력원 문구("실시간" 금지), 판정 화면 모델, 재연결, 세션 표시, 심박 표시 | `web/tests/live.test.mjs` (+ 기존 `core.test.mjs`) |
+| 통합 | 사람이 브라우저로 확인 (3.5절). 더미 10회 연속, 재생, 실제 기기 | — |
 
-## 11. 알려진 이슈
+## 11. 알려진 이슈와 한계
 
 | 번호 | 내용 | 상태 |
 |---|---|---|
-| I1 | 정상 질문이 `ABORTED`로 처리되어 학습 가능 데이터가 0건이다. 복구 결과를 보면 ESP32는 `valid=1`을 보냈는데 `record_session.py`가 `ABORTED`로 처리했고, 연습 질문만 반복되어 본 질문에 도달하지 못했다. 단서: 시간 간격 최대값(36~40ms)이 `GAP_LIMIT_MS=30`을 넘어 `TIME_GAPS` 경고가 나오고 `integrity=CHECK`가 된다. 원인은 아직 확인하지 않았다. | **P0, 미해결** |
-| I2 | z-score가 -22처럼 매우 큰 값으로 나오는 경우가 있다. 표준편차 하한과 클리핑 정책이 필요하다. | 미해결 |
+| I1 | 기록 당시(2026-11-03) 수집기가 ESP32의 `#SUMMARY`/`#BASELINE`(valid=1)을 시도에 붙이지 못해 정상 시도 38개가 모두 `ABORTED`가 되었고 연습 질문만 반복됐다. TIME_GAPS 가설은 틀렸다(무결성 표시에만 영향). **현재 `record_session.py`로 같은 로그를 재생하면 35개 COMPLETE, 진짜 무효 3개만 ABORTED**(2026-11-04 재생 시험). 기록 당시 코드 버전이 없어 당시 원인은 확인하지 못했다 (헤더 폴백이 없었을 것으로 추정). 기존 기록은 모두 연습 질문이라 학습 가능 데이터는 여전히 0건. | 현재 코드에서 재현 안 됨. 짧은 실제 세션으로 본 질문 라벨이 남는지 확인 필요 |
+| I2 | 기기 dz가 -32처럼 매우 크고 세션이 길어질수록 한 방향으로 커진다. 판정은 국소 dz와 표준편차 하한으로 완화했지만 국소 GSR의 방향성은 남는다 (7.1절). 클리핑은 화면 막대에서만 한다. | 완화됨, 원인 미확인 |
 | I3 | 펌웨어 소스가 저장소에 없다. | 미해결 |
-| I4 | 웹의 `hr`(심박수) 채널과 수집기의 `ir`(원시) 채널이 다르다. 서버에서 IR로 심박수를 계산해 맞춘다. | 설계됨 |
-| I6 | 서버가 기기(serial)로 받은 기록을 어디에 저장할지 정해지지 않았다. `data/real/`은 읽기 전용이고 `data/dummy/`에는 섞으면 안 된다. M4 전에 정한다. | 미해결 |
-| I7 | 실험 로그(`run_20261103_154858`)에 ESP32 재부팅 기록(`Guru Meditation Error: Core 1 panic'ed (LoadProhibited)`)이 1건 있다. | 펌웨어 확인 필요 |
-| I8 | `collector/test_replay.py`가 `experiments/`를 현재 폴더 기준으로 찾아서, 저장소 루트에서 실행하면 T8, T9가 건너뛰어진다. | M1에서 다룸 |
-| I9 | 기기 연결이 블루투스인지 USB인지, 기기가 LED/OLED 참/거짓을 어떻게 판정하는지 알 수 없다. | 펌웨어 확인 필요 |
+| I4 | 웹의 심박 채널: 서버가 IR로 심박을 추정해 보낸다 (7.3절). | 구현됨 (추정값, 미검증) |
+| I6 | 서버가 받은 기록(특히 serial)을 저장하지 않는다. 저장 위치(`data/real/`은 읽기 전용, `data/dummy/`와 섞으면 안 됨)와 형식을 정해야 한다. | 미해결 |
+| I7 | 실험 로그(`run_20261103_154858`)에 ESP32 크래시(`Guru Meditation Error: Core 1 panic'ed (LoadProhibited)`)와 레지스터 덤프 21줄이 있다. 해석기는 넘어간다. | 펌웨어 확인 필요 |
+| I8 | `collector/test_replay.py`가 `experiments/`를 현재 폴더 기준으로 찾아서, 저장소 루트에서 실행하면 T8, T9가 건너뛰어진다. | 미해결 (collector 수정 필요, 확인 후 진행) |
+| I9 | 기기가 LED/OLED 참/거짓을 어떻게 판정하는지 모른다. 연결이 USB인지 블루투스(SPP)인지 문서로 확인되지 않았다 (COM 포트 읽기는 사용자가 실기기로 확인). | 펌웨어 확인 필요 |
+| I10 | 샘플 간격이 36~40ms로 늘어나는 경우가 시도마다 있어 모든 시도가 `integrity=CHECK`다. 원인 미확인. | 미해결 (경고로만 둠) |
+| I11 | 서버가 DTR/RTS를 끄고 포트를 열 때 실제 보드가 재부팅되지 않는지 확인 기록이 없다. | 확인 필요 |
+| I12 | 세션 도중에 서버를 켜면 그 세션의 `SESSION START`를 놓쳐 다음 세션까지 그래프·판정이 없다 (collector와 같은 규칙). | 한계 (운영으로 회피: 서버 먼저 켜기) |
+| I13 | 경고 비트 64가 `WARN_BITS`에 없다 (161545 T5, T6). 화면에는 숨기고 서버 로그에만 남긴다. | 펌웨어 확인 필요 |
+| I14 | 심박 추정값을 정답 심박(심전도, 다른 측정기)과 비교한 적이 없다. 정확도는 모른다. | 미검증 |
+| I15 | RuleJudge 임계값 3.0σ는 관례값이며 라벨로 검증하지 않았다. 실측 161545에서 진실 5, 거짓 2, 보류 4가 나오지만 맞았는지는 알 수 없다. | 미검증 (라벨 데이터 필요) |
+| I16 | 더미 입력원의 일부 흐름(답변 중 손 뗌의 이벤트 순서, 보류 직후 세션 종료 버튼, 표준편차 식)은 실측으로 확인하지 않은 가정이다. | 한계 |
+| I17 | 게임 모드에서 질문 문장 표시와 참가자 별칭 입력이 없다 (PRD 6절, 14절 6번). 웹에서 서버로 보내는 메시지가 없다. | 미구현 |
 
 ## 12. 단계 체크리스트
 
 완료하면 `[x]`로 바꾸고 날짜를 적는다.
 
 - [x] **M0** 저장소, 폴더 구조, `.gitignore`, 문서, 개발 환경(`.venv`, `requirements.txt`, `pytest.ini`) (2026-11-04)
-- [ ] **M1** I1 수정 → `test_replay.py` 통과 (I8 포함) → 짧은 실제 세션에서 본 질문 라벨이 남는지 확인 → 본격 수집 시작
-- [ ] **M2** 입력원(dummy/replay), 줄 해석 재사용, 품질 검사, 기준값, 특징 추출, `DummyJudge`, 이유 생성을 명령줄에서 확인
-- [ ] **M3** FastAPI + WebSocket, 웹 연결(보기 전용), 단계 표시, 배지
+- [ ] **M1** I1 진단 완료(현재 코드에서 재현 안 됨, 2026-11-04) → `test_replay.py` 통과 (I8 포함) → 짧은 실제 세션에서 본 질문 라벨이 남는지 확인 → 본격 수집 시작
+- [x] **M2** 입력원(dummy/replay/serial), 줄 해석 재사용, 진행 추적, 최소 품질 검사, 국소 dz, RuleJudge, 이유 생성, 심박 추정값을 명령줄과 서버에서 확인 (2026-11-04)
+  - [x] S1 줄 해석기와 `parse` 명령 (collector 해석 규칙 재사용)
+  - [x] S2 재생·더미 입력원과 진행 추적기 (collector `Run`과 상태 일치)
+  - [x] S3 국소 dz, 최소 품질 검사, RuleJudge(3.0σ 관례값), 이유 생성 (`DummyJudge` 대신)
+  - [x] S4 FastAPI 서버와 `/ws` 방송, 새 접속자 재전송
+  - [x] S5 웹 기기 연동 모드 (판정·이유·배지, 그래프 샘플, 자동 재연결, 쉬운 보류 문장, 세션 번호)
+  - [x] S5b 읽기 전용 시리얼 입력원 (DTR/RTS 끔, 끊김 시 재연결, `ports` 명령)
+  - [x] S7 IR 심박 추정값 표시 (판정 미사용)
+  - [x] S8 문서 갱신
+- [x] **M3** FastAPI + WebSocket, 웹 연결(보기 전용), 단계 표시, 배지 (2026-11-04, M2의 S4·S5로 진행)
 - [ ] **M4** 펌웨어 소스 확인 후 기기 결과와 서버 판정 일치 방안 결정, I6 결정
-- [ ] **M5** `RuleJudge` (시연 예비안), 임계값 설정 파일
+- [ ] **M5** `RuleJudge` (시연 예비안), 임계값 설정 파일 — RuleJudge는 M2-S3에서 구현. 임계값은 코드 상수이며 설정 파일과 라벨 검증은 남음
 - [ ] **M6** 학습 파이프라인(참가자 분리 검증), `model.json`, `LogregJudge` 교체
 - [ ] **M7** 통합 테스트, 리허설, (선택) ESP32 이식과 저주파 피드백
 
-M2, M3, M5는 실측 데이터 없이 진행할 수 있다. M1의 수집은 개발과 병행해서 계속한다. M6은 라벨이 확정된 실측 데이터가 충분히 모인 뒤에 한다 (제안: 참가자 8~10명 이상, 확정된 질문 100~200개 이상).
+M1의 수집은 개발과 병행해서 계속한다. M6은 라벨이 확정된 실측 데이터가 충분히 모인 뒤에 한다 (제안: 참가자 8~10명 이상, 확정된 질문 100~200개 이상).
 
-## 13. Git과 문서 관리
+## 13. 앞으로 할 일
+
+우선순위는 제안이며 사용자가 정한다.
+
+1. **라벨 데이터 수집 (M1):** 짧은 실제 세션으로 본 질문 라벨(`condition`, `confirmed`)이 남는지 확인한 뒤 본격 수집. 수집기와 서버는 같은 포트를 동시에 쓸 수 없으므로 수집은 수집기로 한다.
+2. **서버 기록 저장 (I6):** 저장 위치와 형식 결정 후 `server/storage.py` (모든 기록에 `source`).
+3. **로지스틱 회귀 (M6):** 참가자 단위 분리 검증, 다수 클래스 기준 모델과 RuleJudge 비교, `model.json`, `LogregJudge`. 기준을 못 넘으면 채택하지 않는다.
+4. **RuleJudge 임계값 검증:** 라벨 데이터로 3.0σ와 국소 dz의 타당성을 평가하고 설정 파일로 옮긴다 (M5).
+5. **심박 추정 검증 (I14):** 다른 측정기와 비교, 그 뒤에 `hr_delta` 특징 검토.
+6. **블루투스 SPP:** ESP32 Bluetooth 시리얼(SPP)로 연결하면 Windows에 COM 포트로 잡히므로 `SOURCE=serial`을 그대로 쓸 수 있을 것으로 예상한다 (미확인). DTR/RTS, 재연결, 지연을 실기기로 확인한다.
+7. **버튼 디바운스 (펌웨어):** 로그의 `IGNORED_*` 버튼 이벤트와 POLL/IRQ 중복 여부를 펌웨어 소스와 함께 확인한다.
+8. **펌웨어 확인 (I3, I7, I9, I11, I13):** LED/OLED 판정 기준, 크래시 원인, 경고 비트 64, DTR/RTS 동작.
+9. **원시 샘플 품질 검사 (7.2절):** `check_segment` 결과를 보류/경고에 반영, TIME_GAPS 원인(I10) 확인.
+10. **게임 모드 질문 표시와 참가자 별칭 (I17).**
+11. **`collector/test_replay.py` 경로 문제 (I8):** collector 수정이 필요하므로 이유와 영향을 알리고 확인을 받은 뒤 진행.
+
+## 14. Git과 문서 관리
 
 - 커밋, 푸시, 풀은 사용자가 직접 한다 (1절 규칙). 기능마다 새 브랜치에서 작업하고, 테스트가 통과한 뒤에만 합친다. main에 직접 커밋하지 않는다.
 - 커밋 메시지 형식 제안: `기능: 설명`, `수정: 설명`, `문서: 설명`

@@ -1,4 +1,5 @@
 import { CHANNELS, STORAGE_KEY, demoSample, summarizeBaseline, summarizeDemo, recordsToCsv, parseRecords } from './core.mjs';
+import { UNTRAINED_BADGE, TOAST_EVENTS, bpmView, connectLive, eventLabel, initialState, inputLabel, latestResult, normalize, noticeText, phaseDisplay, phaseStep, reduce, sessionLabel, signalHeading, streamStatusText, trialView, wsUrl } from './live.mjs';
 const $ = id => document.getElementById(id);
 const palette = { hr: '#4e8166', gsr: '#c68c58', fsr: '#9790c3' };
 const questionBank = ['지금 떠올린 숫자는 짝수인가요?', '오늘 아침을 먹었나요?', '지금 보고 있는 카드에 숫자 3이 있나요?', '최근 일주일 안에 영화를 봤나요?', '지금 선택한 색은 파란색인가요?'];
@@ -8,6 +9,7 @@ try { records = parseRecords(localStorage.getItem(STORAGE_KEY)); } catch { stora
 let settings = { participant: 'P01', baselineDuration: 8, answerDuration: 6 };
 let sessionId, phase = 'idle', baseline = null, baselineSamples = [], measured = [], stream = [], phaseStarted = 0, phaseLastTick = 0, latestId = null, round = 0, questionIndex = 0;
 let toastTimer;
+let live = null; // 기기 연동 모드 상태 (Python 서버 /ws에 연결되면 채워진다. null이면 기존 데모 모드)
 const shortDate = date => new Intl.DateTimeFormat('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(date));
 const signed = (n, digits = 1) => `${n >= 0 ? '+' : ''}${n.toFixed(digits)}`;
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 4200); }
@@ -132,6 +134,7 @@ function trace(ctx, points, color, fillHeight = null) {
 }
 function drawCharts() {
   if ($('dashboard-page').hidden) return;
+  if (live) { drawLiveCharts(); return; }
   for (const key of CHANNELS) {
     const area = setupCanvas($(`${key}-spark`)); if (!area) continue;
     const { ctx, width, height } = area; const values = stream.slice(-45).map(s => s[key]);
@@ -210,5 +213,154 @@ document.addEventListener('visibilitychange', () => { if (document.hidden && ['b
 newSession(false); renderHistory(); setPage();
 const initial = performance.now();
 for (let t = Math.max(0, initial - 20000); t < initial; t += 200) stream.push(demoSample(t));
-tick(); setInterval(tick, 200);
+tick(); const demoTimer = setInterval(tick, 200);
 if (!storageAvailable) toast('기록 저장 공간을 사용할 수 없습니다. 내보내기 기능을 이용해 주세요.');
+
+// ---------- 기기 연동 모드 (Python 서버의 /ws, 보기 전용) ----------
+// /ws에 처음 연결되면 데모 공급(demoSample, summarizeDemo)을 멈추고 서버가 보내는 단계와 결과만 표시한다.
+// 연결할 수 없으면(예전 데모 서버 npm run dev) 기존 데모 모드를 그대로 쓴다.
+let connection = 'connecting', liveDrawPending = false, renderedResultKey = null;
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+function enterLiveMode() {
+  clearInterval(demoTimer);
+  phase = 'idle'; stream = [];
+  for (const id of ['primary-action', 'cancel-action', 'question-fields', 'calibration-visual', 'progress-info', 'phase-progress', 'new-session', 'label-controls']) $(id).hidden = true;
+  $('settings-open').disabled = true;
+  $('control-hint').textContent = '진행은 기기 버튼으로 합니다. 이 화면은 보기 전용입니다.';
+  $('device-note-title').textContent = '기기 주도 · 보기 전용';
+  $('device-note-body').replaceChildren('웹에서는 기기를 조작하지 않습니다.', document.createElement('br'), '진행과 종료는 기기 버튼으로 합니다.');
+  $('hr-foot-label').textContent = '심박'; renderLiveBpm(null);
+  $('hr-spark').setAttribute('aria-label', 'PPG 적외선 원신호 최근 변화 그래프');
+  $('gsr-spark').setAttribute('aria-label', '피부 반응 원신호 최근 변화 그래프');
+  $('fsr-spark').setAttribute('aria-label', '손가락 압력 원신호 최근 변화 그래프');
+  $('timeline').setAttribute('aria-label', 'PPG, GSR, FSR 원신호의 최근 20초 타임라인. 채널마다 따로 정규화한 상대 크기입니다.');
+  $('chart-subtitle').textContent = '서버가 보낸 원신호를 채널마다 따로 정규화해 같은 시간축에 그립니다.';
+  renderedResultKey = null;
+}
+function renderLiveStatus() {
+  const s = live.status;
+  $('mode-pill-text').textContent = inputLabel(s) + (s?.finished ? ' · 끝남' : '');
+  const [label, body] = noticeText(s);
+  $('notice-text').replaceChildren(el('strong', '', label), ` ${body} 판정은 오락용이며 거짓의 증명이 아닙니다.`);
+  $('signal-heading').textContent = signalHeading(s);
+  $('stream-status').textContent = streamStatusText(s, connection === 'open' ? 'open' : 'disconnected');
+  const banner = $('connection-banner');
+  if (connection !== 'open') { banner.hidden = false; banner.className = 'connection-banner warn'; banner.textContent = '서버와 연결이 끊겼습니다. 자동으로 다시 연결하는 중입니다…'; }
+  else if (live.error) { banner.hidden = false; banner.className = 'connection-banner warn'; banner.textContent = live.error.message; }
+  else banner.hidden = true;
+}
+function renderLivePhase() {
+  const p = live.phase?.phase;
+  const shown = phaseDisplay(p, live.status); // 재생/더미의 손 올리기 단계는 알약을 숨기고 '따라갑니다' 문구
+  $('phase-pill').hidden = !shown.pill; $('phase-pill').textContent = shown.pill ?? '';
+  $('control-title').textContent = shown.title; $('control-description').textContent = shown.desc;
+  const steps = ['baseline', 'question', 'result'], current = phaseStep(p);
+  steps.forEach((s, i) => { $(`step-${s}`).className = current === s ? 'current' : i < steps.indexOf(current) ? 'complete' : ''; });
+  $('session-label').textContent = sessionLabel(live.session);
+  $('participant-display').textContent = live.phase?.trial ? `질문 ${live.phase.trial}` : '질문 전';
+  const bl = live.baseline;
+  for (const k of ['gsr', 'fsr']) {
+    const m = bl?.[k]?.mean, sd = bl?.[k]?.sd;
+    $(`${k}-baseline`).textContent = Number.isFinite(m) ? `${m.toFixed(0)}${Number.isFinite(sd) ? ` ± ${sd.toFixed(1)}` : ''}` : '측정 전';
+  }
+}
+function renderLiveBpm(msg) {
+  const v = bpmView(msg); // 값이 없을 때만 '심박 계산 전'
+  $('hr-value').textContent = v.value; $('hr-unit').textContent = v.unit; $('hr-baseline').textContent = v.foot;
+}
+function renderLiveValues() {
+  const last = live.samples.at(-1);
+  $('gsr-value').textContent = last ? String(last.gsr) : '—';
+  $('fsr-value').textContent = last ? String(last.fsr) : '—';
+}
+function renderLiveResult() {
+  const r = latestResult(live);
+  const key = r ? `${live.results.length}|${trialView(r).key}` : null;
+  if (key === renderedResultKey) return; // 같은 결과를 다시 그리지 않는다 (aria-live 반복 낭독 방지)
+  renderedResultKey = key;
+  const box = $('result-content'); box.replaceChildren();
+  if (!r) {
+    $('result-pill').textContent = UNTRAINED_BADGE;
+    box.append(el('div', 'result-placeholder', '—'), el('p', 'result-message', '기기 단계를 따라가는 중입니다. 답변이 끝나면 판정과 이유가 여기에 나타납니다.'));
+    return;
+  }
+  const v = trialView(r);
+  $('result-pill').textContent = v.badge ?? v.judgeLabel;
+  const head = el('div', 'live-decision');
+  head.append(el('div', `result-heading ${v.kind}`, v.decisionLabel));
+  if (v.badge) head.append(el('span', 'badge-untrained', v.badge));
+  box.append(el('p', 'live-meta', `${v.title} · ${v.sourceLabel} · 판정기 ${v.judgeLabel}`), head);
+  box.append(el('p', 'live-label', v.decision === 'inconclusive' ? '보류 사유' : '판정 이유'));
+  const list = el('ul', 'reason-list'); v.reasons.forEach(t => list.append(el('li', '', t))); box.append(list);
+  if (v.contributions.length) {
+    const bars = el('div', 'contrib-list');
+    v.contributions.forEach(c => {
+      const row = el('div', `contrib-row${c.over ? ' over' : ''}`);
+      const bar = el('span', 'contrib-bar'); const fill = el('i'); fill.style.width = `${c.width}%`; bar.append(fill);
+      row.append(el('span', 'contrib-label', c.label), bar, el('span', 'contrib-value', c.text));
+      bars.append(row);
+    });
+    box.append(el('p', 'live-label', '센서별 변화 (가운데 선 = 임계값)'), bars);
+  }
+  if (v.warnings.length) box.append(el('p', 'field-note', `경고: ${v.warnings.join(', ')}`));
+  box.append(el('p', 'field-note live-judge-note', v.judgeNote), el('p', 'field-note live-disclaimer', v.disclaimer));
+}
+function renderLiveRecent() {
+  const rows = live.results.slice(-3).reverse();
+  $('recent-rounds').replaceChildren();
+  if (!rows.length) { const box = el('div', 'empty-inline'); box.append(el('span', '', '⌁'), el('p', '', '첫 판정을 기다리고 있어요.')); $('recent-rounds').append(box); return; }
+  rows.forEach(r => { const v = trialView(r); const row = el('div', 'record-row'); const info = el('span', '', v.title); info.append(el('small', '', `${v.sourceLabel}${v.badge ? ` · ${v.badge}` : ''}`)); row.append(info, el('span', '', v.decisionLabel)); $('recent-rounds').append(row); });
+}
+function renderLive() { renderLiveStatus(); renderLivePhase(); renderLiveValues(); renderLiveBpm(live.bpm); renderLiveResult(); renderLiveRecent(); scheduleLiveDraw(); }
+function scheduleLiveDraw() {
+  if (liveDrawPending) return;
+  liveDrawPending = true;
+  requestAnimationFrame(() => { liveDrawPending = false; drawCharts(); });
+}
+function drawLiveCharts() {
+  const pts = live.samples;
+  const field = { hr: 'ir', gsr: 'gsr', fsr: 'fsr' };
+  for (const key of CHANNELS) {
+    const area = setupCanvas($(`${key}-spark`)); if (!area) continue;
+    const { ctx, width, height } = area; const recent = pts.slice(-125); // 약 5초 (25Hz)
+    const ys = normalize(recent.map(p => p[field[key]]));
+    trace(ctx, ys.map((y, i) => [i / Math.max(ys.length - 1, 1) * width, height - 4 - y * (height - 8)]), palette[key], height);
+  }
+  const area = setupCanvas($('timeline')); if (!area) return;
+  const { ctx, width, height } = area; const left = 28, top = 18, bottom = height - 27, right = width - 4;
+  ctx.font = '9px sans-serif'; ctx.fillStyle = '#a2ac97'; ctx.lineWidth = 1;
+  for (let i = 0; i < 4; i++) { const y = top + i / 3 * (bottom - top); ctx.beginPath(); ctx.strokeStyle = '#edf1e7'; ctx.setLineDash([3, 4]); ctx.moveTo(left, y); ctx.lineTo(right, y); ctx.stroke(); }
+  ctx.setLineDash([]);
+  for (let i = 0; i <= 4; i++) ctx.fillText(i === 4 ? '최근' : `${20 - i * 5}초 전`, left + i / 4 * (right - left) - (i === 4 ? 17 : 0), height - 5);
+  if (!pts.length) return;
+  const end = pts.at(-1).t;
+  const bands = { hr: [0.55, 0.95], gsr: [0.30, 0.60], fsr: [0.05, 0.35] };
+  CHANNELS.forEach(key => {
+    const ys = normalize(pts.map(p => p[field[key]])); const [lo, hi] = bands[key];
+    trace(ctx, pts.map((p, i) => [left + (1 - (end - p.t) / 20000) * (right - left), bottom - (lo + ys[i] * (hi - lo)) * (bottom - top)]), palette[key]);
+  });
+}
+if (location.protocol.startsWith('http')) {
+  connectLive({
+    url: wsUrl(location),
+    onState(state, info) {
+      if (state === 'unavailable') return; // /ws가 없다: 데모 모드 유지
+      connection = state;
+      if (state === 'open') {
+        if (!live) enterLiveMode();
+        live = initialState(); renderedResultKey = null; // 서버가 상태와 기록을 다시 보내 준다
+        if (info?.reconnected) toast('서버에 다시 연결됐습니다.');
+      }
+      if (live) renderLive();
+    },
+    onMessage(msg) {
+      if (!live) return;
+      live = reduce(live, msg);
+      if (msg.type === 'sample_batch') { renderLiveValues(); scheduleLiveDraw(); return; }
+      if (msg.type === 'bpm_update') { renderLiveBpm(live.bpm); return; }
+      if (msg.type === 'phase_update' && msg.event && TOAST_EVENTS.has(msg.event.name)) toast(eventLabel(msg.event));
+      if (msg.type === 'error') toast(msg.message);
+      renderLive();
+    },
+  });
+}
