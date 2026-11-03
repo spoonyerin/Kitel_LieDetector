@@ -30,3 +30,6 @@
 .live-question.dim{opacity:.45}
 .live-question.dim .live-question-text{font-size:13px;font-weight:500}
 .live-result-question{color:#56674d}
+/* 판정을 막지 않는 경고 (quality.warning_texts): 작게 */
+.live-warnings-label{margin:10px 0 2px;font-size:9px;color:#a0a794}
+.live-warnings{margin:0;padding-left:16px;font-size:9px;line-height:1.7;color:#95a087}

@@ -9,7 +9,7 @@ from typing import Optional
 from server.judges.rule import RuleJudge
 from server.pipeline.features import json_features, local_features
 from server.pipeline.quality import assess
-from server.reasons import make_reasons
+from server.reasons import make_reasons, warning_text
 
 DISCLAIMER = "오락용 게임입니다. 이유는 통계적 설명이며 거짓의 증명이 아닙니다."
 
@@ -60,7 +60,10 @@ def judge_trial(trial, source: str, judge: RuleJudge = None,
         "score": verdict.score,
         "judge": {"name": verdict.judge_name, "version": verdict.judge_version, "trained": verdict.trained},
         "judge_note": judge.note,
-        "quality": {"ok": quality.ok, "flags": quality.flags, "warnings": shown_warnings},
+        "quality": {"ok": quality.ok, "flags": quality.flags, "warnings": shown_warnings,
+                    # 화면에 작게 보여 줄 쉬운 문장 (같은 문장은 한 번만)
+                    "warning_texts": list(dict.fromkeys(warning_text(w) for w in shown_warnings)),
+                    "raw_check": quality.raw},
         "server_only": {"warnings": server_warnings},   # 웹으로 보내지 않는다 (for_web)
         "features": json_features(feat.features),
         "contributions": [
