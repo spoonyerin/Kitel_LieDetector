@@ -17,3 +17,6 @@ node_modules/
 .pytest_cache/
 .vscode/
 *.egg-info/
+
+# 학습 출력 (데이터셋, model.json)
+training/out/
