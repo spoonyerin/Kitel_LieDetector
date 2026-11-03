@@ -322,7 +322,7 @@ class Judge(Protocol):
 
 완료하면 `[x]`로 바꾸고 날짜를 적는다.
 
-- [ ] **M0** 저장소, 폴더 구조, `.gitignore`, 문서, 개발 환경(`.venv`, `requirements.txt`, `pytest.ini`)
+- [x] **M0** 저장소, 폴더 구조, `.gitignore`, 문서, 개발 환경(`.venv`, `requirements.txt`, `pytest.ini`) (2026-11-04)
 - [ ] **M1** I1 수정 → `test_replay.py` 통과 (I8 포함) → 짧은 실제 세션에서 본 질문 라벨이 남는지 확인 → 본격 수집 시작
 - [ ] **M2** 입력원(dummy/replay), 줄 해석 재사용, 품질 검사, 기준값, 특징 추출, `DummyJudge`, 이유 생성을 명령줄에서 확인
 - [ ] **M3** FastAPI + WebSocket, 웹 연결(보기 전용), 단계 표시, 배지
