@@ -15,6 +15,7 @@
     device_status  입력원 이름과 종류(재생/합성/실시간), 연결 여부, 끝났는지
     phase_update   기기 단계 변화 또는 단계 안의 사건(손 접촉, 세션 시작/종료, 재부팅)
     sample_batch   그래프용 원시 샘플 묶음 (server/stream.py: 솎기, 0.2~0.5초 간격, 최대 개수 제한)
+    bpm_update     IR로 추정한 심박수 (server/pipeline/bpm.py, 0.5~1초 간격, 화면 표시용, 판정에 안 씀)
     baseline_result 기준 측정 결과 (평균, 표준편차, 상태, 하한 적용 여부)
     trial_result   server.result.judge_trial의 결과 그대로 (judge_note, disclaimer 포함)
     error          입력원 오류 (retryable, message)
@@ -25,6 +26,7 @@ import json
 import logging
 import mimetypes
 import threading
+import time
 from collections import deque
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -34,6 +36,7 @@ from fastapi.staticfiles import StaticFiles
 
 from server.config import WEB_DIST, Settings, load_settings
 from server.judges.rule import RuleJudge
+from server.pipeline.bpm import BpmEstimate, BpmTracker, bpm_message
 from server.pipeline.tracker import (BaselineDone, DeviceRebooted, Notice, PhaseChanged, SessionEnded,
                                      SessionStarted, Tracker, TrialDone)
 from server.result import for_web, judge_trial
@@ -48,6 +51,8 @@ mimetypes.add_type("text/javascript", ".mjs")
 
 SAMPLE_HISTORY_BATCHES = 80   # 새 접속자에게 다시 보낼 최근 샘플 묶음 수 (0.25초 간격이면 약 20초)
 logger = logging.getLogger("truthpulse")
+# 이 단계로 바뀌면 기기가 샘플을 보내지 않으므로 심박 추정을 비우고 "측정 구간이 아님"을 보낸다
+BPM_PAUSE_PHASES = ("PLACE_HAND", "ANALYZING", "RESULT", "ABORTED", "SESSION_END")
 
 # 입력원 종류별 화면 표시용 정보
 INPUT_INFO = {
@@ -154,8 +159,23 @@ def run_pipeline(settings: Settings, emit, stop: threading.Event, source=None) -
         # 시리얼은 포트를 열기 전이므로 연결 안 됨으로 시작한다
         emit(device_status(settings, source.source, connected=settings.source != "serial"))
 
+        # 심박 추정 (화면 표시용, 판정에는 쓰지 않는다)
+        bpm = BpmTracker()
+        bpm_state = {"last_emit": None, "last_reason": None}
+
+        def emit_bpm(est, esp_time_ms=None):
+            emit(bpm_message(est, source.source, esp_time_ms))
+            bpm_state["last_reason"] = est.reason
+
+        def pause_bpm():
+            bpm.reset()
+            if bpm_state["last_reason"] not in (None, "PAUSED"):
+                emit_bpm(BpmEstimate(None, "PAUSED"))
+
         def handle(updates):
             for u in updates:
+                if (isinstance(u, PhaseChanged) and u.phase in BPM_PAUSE_PHASES) or isinstance(u, DeviceRebooted):
+                    pause_bpm()
                 msg = update_to_message(u, source.source, judge)
                 if msg is not None:
                     emit(with_session(msg, tracker))
@@ -168,6 +188,7 @@ def run_pipeline(settings: Settings, emit, stop: threading.Event, source=None) -
                     last = batcher.flush()
                     if last:
                         emit(last)
+                    pause_bpm()
                 for msg in status_messages(settings, line):
                     emit(msg)
                 continue
@@ -178,6 +199,11 @@ def run_pipeline(settings: Settings, emit, stop: threading.Event, source=None) -
                 batch = batcher.add(item)
                 if batch:
                     emit(batch)
+                bpm.add(item)
+                now = time.monotonic()
+                if bpm_state["last_emit"] is None or now - bpm_state["last_emit"] >= settings.bpm_interval_sec:
+                    bpm_state["last_emit"] = now
+                    emit_bpm(bpm.estimate(), item.time_ms)
             handle(tracker.feed(item))
         if stop.is_set():   # 서버 종료로 멈춘 경우: 끝 처리 없이 나간다
             return
@@ -210,6 +236,7 @@ class Hub:
         self.phase = None          # 마지막 단계 phase_update (event가 아닌 것)
         self.error = None          # 마지막 error (입력원이 실패한 뒤 접속해도 이유를 볼 수 있게)
         self.baseline = None       # 마지막 baseline_result
+        self.bpm = None            # 마지막 bpm_update (심박 추정값)
         self.samples = deque(maxlen=SAMPLE_HISTORY_BATCHES)   # 최근 sample_batch (그래프가 비지 않게)
         self.history_limit = history_limit
         self.lock = asyncio.Lock()
@@ -231,6 +258,8 @@ class Hub:
             self.baseline = msg
         elif t == "sample_batch":
             self.samples.append(msg)
+        elif t == "bpm_update":
+            self.bpm = msg
 
     async def publish(self, msg: dict):
         async with self.lock:
@@ -246,7 +275,7 @@ class Hub:
         """새 접속자에게 상태, 마지막 오류, 기준 측정, 마지막 단계, 최근 샘플, 지금까지의 시도 결과를
         보낸 뒤 방송 대상에 넣는다."""
         async with self.lock:
-            for msg in [self.status, self.error, self.baseline, self.phase, *self.samples, *self.history]:
+            for msg in [self.status, self.error, self.baseline, self.phase, self.bpm, *self.samples, *self.history]:
                 if msg is not None:
                     await ws.send_text(dumps(msg))
             self.clients.add(ws)

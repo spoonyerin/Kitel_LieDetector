@@ -207,6 +207,31 @@ def test_sample_batches_and_baseline_live():
     assert baselines and baselines[-1]["status"] == "COMPLETE" and baselines[-1]["fsr"]["mean"] is not None
 
 
+def test_bpm_updates_live_and_on_join():
+    """20배속 더미: 심박 추정값이 0.5~1초 간격으로 오고, 측정 구간이 아니면 비워지고, 새 접속자도 마지막 값을 받는다."""
+    settings = _dummy(speed=20, trials=2, patterns=("calm", "calm"))
+    t0 = time.time()
+    with running_server(settings) as port:
+        msgs = _collect(port, lambda m: _finished(m) and len(_results(m)) == 2)
+        elapsed = time.time() - t0
+        late = _collect(port, lambda m: len(_results(m)) == 2, timeout=5)
+    bpms = [m for m in msgs if m["type"] == "bpm_update"]
+    values = [m["bpm"] for m in bpms if m["bpm"] is not None]
+    assert values and all(abs(v - 72) <= 3 for v in values)          # 더미 심박 72 ± 1.5
+    assert all(m["estimate"] is True and m["source"] == "dummy" for m in bpms)
+    assert any(m["reason"] == "PAUSED" and m["bpm"] is None for m in bpms)
+    assert len(bpms) <= elapsed / settings.bpm_interval_sec + 10      # 과하게 보내지 않는다
+    assert [m for m in late if m["type"] == "bpm_update"] == [bpms[-1]]
+    results = _results(msgs)
+    assert all("bpm" not in r["features"] for r in results)           # 판정에는 쓰지 않는다
+
+
+def test_bpm_interval_setting():
+    assert load_settings({"BPM_INTERVAL_SEC": "0.5"}).bpm_interval_sec == 0.5
+    with pytest.raises(ValueError):
+        load_settings({"BPM_INTERVAL_SEC": "2"})
+
+
 def test_sample_settings_from_env():
     s = load_settings({"SAMPLE_BATCH_SEC": "0.5", "SAMPLE_DECIMATE": "5", "SAMPLE_MAX_PER_BATCH": "40"})
     assert (s.sample_batch_sec, s.sample_decimate, s.sample_max_per_batch) == (0.5, 5, 40)

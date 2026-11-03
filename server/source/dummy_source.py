@@ -54,6 +54,7 @@ class _Gen:
         self.out: List[Item] = []
         self.bid = 0
         self.base_lv = {"fsr": 2200.0, "gsr": 2250.0, "ir": 103000.0, "red": 88000.0}
+        self.beat = 0.0   # 맥박 위상 (0~1). 심박이 바뀌어도 튀지 않게 샘플마다 누적한다
 
     # ---------- 줄 쓰기 ----------
     def emit(self, line):
@@ -83,8 +84,8 @@ class _Gen:
             elif pattern == "calm":
                 gsr += 4 * k
                 fsr -= 15 * k
-        beat = (ts * hr / 60.0) % 1.0
-        pulse = math.exp(-((beat - 0.2) / 0.08) ** 2)
+        self.beat = (self.beat + hr / 60.0 * SAMPLE_MS / 1000.0) % 1.0
+        pulse = math.exp(-((self.beat - 0.2) / 0.08) ** 2)
         ir = self.base_lv["ir"] + 600 * pulse + g(0, 30)
         red = self.base_lv["red"] + 450 * pulse + g(0, 25)
         contact = 1

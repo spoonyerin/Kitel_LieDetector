@@ -1,5 +1,5 @@
 import { CHANNELS, STORAGE_KEY, demoSample, summarizeBaseline, summarizeDemo, recordsToCsv, parseRecords } from './core.mjs';
-import { UNTRAINED_BADGE, TOAST_EVENTS, connectLive, eventLabel, initialState, inputLabel, latestResult, normalize, noticeText, phaseDisplay, phaseStep, reduce, sessionLabel, signalHeading, streamStatusText, trialView, wsUrl } from './live.mjs';
+import { UNTRAINED_BADGE, TOAST_EVENTS, bpmView, connectLive, eventLabel, initialState, inputLabel, latestResult, normalize, noticeText, phaseDisplay, phaseStep, reduce, sessionLabel, signalHeading, streamStatusText, trialView, wsUrl } from './live.mjs';
 const $ = id => document.getElementById(id);
 const palette = { hr: '#4e8166', gsr: '#c68c58', fsr: '#9790c3' };
 const questionBank = ['지금 떠올린 숫자는 짝수인가요?', '오늘 아침을 먹었나요?', '지금 보고 있는 카드에 숫자 3이 있나요?', '최근 일주일 안에 영화를 봤나요?', '지금 선택한 색은 파란색인가요?'];
@@ -229,7 +229,7 @@ function enterLiveMode() {
   $('control-hint').textContent = '진행은 기기 버튼으로 합니다. 이 화면은 보기 전용입니다.';
   $('device-note-title').textContent = '기기 주도 · 보기 전용';
   $('device-note-body').replaceChildren('웹에서는 기기를 조작하지 않습니다.', document.createElement('br'), '진행과 종료는 기기 버튼으로 합니다.');
-  $('hr-value').textContent = '—'; $('hr-baseline').textContent = '심박 계산 전';
+  $('hr-foot-label').textContent = '심박'; renderLiveBpm(null);
   $('hr-spark').setAttribute('aria-label', 'PPG 적외선 원신호 최근 변화 그래프');
   $('gsr-spark').setAttribute('aria-label', '피부 반응 원신호 최근 변화 그래프');
   $('fsr-spark').setAttribute('aria-label', '손가락 압력 원신호 최근 변화 그래프');
@@ -263,6 +263,10 @@ function renderLivePhase() {
     const m = bl?.[k]?.mean, sd = bl?.[k]?.sd;
     $(`${k}-baseline`).textContent = Number.isFinite(m) ? `${m.toFixed(0)}${Number.isFinite(sd) ? ` ± ${sd.toFixed(1)}` : ''}` : '측정 전';
   }
+}
+function renderLiveBpm(msg) {
+  const v = bpmView(msg); // 값이 없을 때만 '심박 계산 전'
+  $('hr-value').textContent = v.value; $('hr-unit').textContent = v.unit; $('hr-baseline').textContent = v.foot;
 }
 function renderLiveValues() {
   const last = live.samples.at(-1);
@@ -307,7 +311,7 @@ function renderLiveRecent() {
   if (!rows.length) { const box = el('div', 'empty-inline'); box.append(el('span', '', '⌁'), el('p', '', '첫 판정을 기다리고 있어요.')); $('recent-rounds').append(box); return; }
   rows.forEach(r => { const v = trialView(r); const row = el('div', 'record-row'); const info = el('span', '', v.title); info.append(el('small', '', `${v.sourceLabel}${v.badge ? ` · ${v.badge}` : ''}`)); row.append(info, el('span', '', v.decisionLabel)); $('recent-rounds').append(row); });
 }
-function renderLive() { renderLiveStatus(); renderLivePhase(); renderLiveValues(); renderLiveResult(); renderLiveRecent(); scheduleLiveDraw(); }
+function renderLive() { renderLiveStatus(); renderLivePhase(); renderLiveValues(); renderLiveBpm(live.bpm); renderLiveResult(); renderLiveRecent(); scheduleLiveDraw(); }
 function scheduleLiveDraw() {
   if (liveDrawPending) return;
   liveDrawPending = true;
@@ -353,6 +357,7 @@ if (location.protocol.startsWith('http')) {
       if (!live) return;
       live = reduce(live, msg);
       if (msg.type === 'sample_batch') { renderLiveValues(); scheduleLiveDraw(); return; }
+      if (msg.type === 'bpm_update') { renderLiveBpm(live.bpm); return; }
       if (msg.type === 'phase_update' && msg.event && TOAST_EVENTS.has(msg.event.name)) toast(eventLabel(msg.event));
       if (msg.type === 'error') toast(msg.message);
       renderLive();

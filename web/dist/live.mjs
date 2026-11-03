@@ -119,8 +119,17 @@ export function trialView(r) {
   };
 }
 
+// 심박 추정값 (화면 표시용, 판정에는 쓰지 않는다). 값이 없으면 "—"와 그 이유.
+export function bpmView(msg) {
+  if (msg && Number.isFinite(msg.bpm)) {
+    return { value: String(Math.round(msg.bpm)), unit: 'BPM 추정값', foot: `추정값 · 최근 ${msg.window_sec ?? 10}초` };
+  }
+  const why = msg?.reason && msg.reason !== 'NOT_ENOUGH_DATA' && msg.reason_text ? ` · ${msg.reason_text}` : '';
+  return { value: '—', unit: 'BPM', foot: `심박 계산 전${why}` };
+}
+
 // 상태
-export const initialState = () => ({ status: null, phase: null, session: null, events: [], baseline: null, results: [], samples: [], error: null });
+export const initialState = () => ({ status: null, phase: null, session: null, bpm: null, events: [], baseline: null, results: [], samples: [], error: null });
 export function batchToPoints(b) {
   const n = Array.isArray(b?.time_ms) ? b.time_ms.length : 0;
   return Array.from({ length: n }, (_, i) => ({
@@ -139,6 +148,7 @@ export function reduce(state, msg) {
       return next;
     }
     case 'baseline_result': return { ...state, baseline: msg };
+    case 'bpm_update': return { ...state, bpm: msg };
     case 'trial_result': {
       const key = resultKey(msg);
       const results = [...state.results.filter(r => resultKey(r) !== key), msg].slice(-MAX_RESULTS);

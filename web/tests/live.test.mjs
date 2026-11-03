@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  UNTRAINED_BADGE, WINDOW_MS, batchToPoints, connectLive, initialState, inputLabel, isLive, latestResult,
+  UNTRAINED_BADGE, WINDOW_MS, batchToPoints, bpmView, connectLive, initialState, inputLabel, isLive, latestResult,
   normalize, noticeText, phaseDisplay, phaseStep, reduce, sessionLabel, signalHeading, streamStatusText, trialView,
   visibleWarnings, wsUrl,
 } from '../dist/live.mjs';
@@ -164,6 +164,20 @@ test('unknown warning bits are not shown on screen', () => {
   assert.deepEqual(visibleWarnings(undefined), []);
   const v = trialView(result({ quality: { ok: true, flags: [], warnings: ['UNKNOWN_WARN_BITS=64'] } }));
   assert.deepEqual(v.warnings, []);
+});
+
+test('BPM shows a rounded estimate with a label, and "심박 계산 전" only without a value', () => {
+  const ok = bpmView({ type: 'bpm_update', bpm: 72.4, estimate: true, reason: 'OK', reason_text: '', window_sec: 10 });
+  assert.deepEqual(ok, { value: '72', unit: 'BPM 추정값', foot: '추정값 · 최근 10초' });
+  assert.ok(!ok.foot.includes('심박 계산 전'));
+  assert.deepEqual(bpmView(null), { value: '—', unit: 'BPM', foot: '심박 계산 전' });
+  assert.equal(bpmView({ bpm: null, reason: 'NOT_ENOUGH_DATA', reason_text: '신호를 모으는 중' }).foot, '심박 계산 전');
+  const irregular = bpmView({ bpm: null, reason: 'IRREGULAR', reason_text: '맥박 간격이 불규칙함' });
+  assert.equal(irregular.value, '—'); assert.equal(irregular.foot, '심박 계산 전 · 맥박 간격이 불규칙함');
+  assert.equal(bpmView({ bpm: NaN, reason: 'OK' }).value, '—');
+  let s = reduce(initialState(), { type: 'bpm_update', bpm: 80, reason: 'OK' });
+  assert.equal(s.bpm.bpm, 80);
+  assert.equal(initialState().bpm, null); // 재연결하면 서버가 마지막 값을 다시 보낸다
 });
 
 // ---------- 연결과 자동 재연결 (가짜 WebSocket, 가짜 타이머) ----------

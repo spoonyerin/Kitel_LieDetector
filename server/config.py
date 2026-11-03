@@ -7,6 +7,7 @@
 | SERIAL_BAUD       | 115200                                         | 통신 속도. 기본값은 collector/record_session.py의 --baud 기본값 |
 | SERIAL_RETRY_SEC  | 1.5                                            | 포트가 없거나 끊겼을 때 다시 여는 간격 (1~2초) |
 | SERIAL_IDLE_SEC   | 5                                              | 이 시간 동안 기기 줄이 없으면 live=false (0이면 끔) |
+| BPM_INTERVAL_SEC  | 1.0                                            | 심박 추정값(bpm_update)을 보내는 간격 (0.5~1초) |
 | REPLAY_RUN        | data/real/experiments/run_20261103_161545      | 재생할 run 폴더 또는 raw_serial_log.txt (읽기 전용) |
 | REPLAY_SPEED      | 1.0                                            | 재생 배속 (0이면 기다리지 않음) |
 | REPLAY_MAX_WAIT   | 2.0                                            | 줄 사이 최대 대기 초 (세션 사이 긴 공백을 줄임) |
@@ -53,8 +54,11 @@ class Settings:
     serial_baud: int = DEFAULT_BAUD
     serial_retry_sec: float = 1.5
     serial_idle_sec: float = 5.0
+    bpm_interval_sec: float = 1.0
 
     def __post_init__(self):
+        if not 0.5 <= self.bpm_interval_sec <= 1.0:
+            raise ValueError(f"BPM_INTERVAL_SEC는 0.5~1초여야 합니다: {self.bpm_interval_sec}")
         if self.source == "serial" and not self.serial_port:
             raise ValueError("SOURCE=serial이면 SERIAL_PORT가 필요합니다 (예: COM6). 포트 목록: python -m server.cli ports")
         if not 1.0 <= self.serial_retry_sec <= 2.0:
@@ -108,4 +112,5 @@ def load_settings(env=None) -> Settings:
         serial_baud=_get(env, "SERIAL_BAUD", DEFAULT_BAUD, int),
         serial_retry_sec=_get(env, "SERIAL_RETRY_SEC", 1.5, float),
         serial_idle_sec=_get(env, "SERIAL_IDLE_SEC", 5.0, float),
+        bpm_interval_sec=_get(env, "BPM_INTERVAL_SEC", 1.0, float),
     )
