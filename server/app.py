@@ -16,6 +16,7 @@
     phase_update   기기 단계 변화 또는 단계 안의 사건(손 접촉, 세션 시작/종료, 재부팅)
     sample_batch   그래프용 원시 샘플 묶음 (server/stream.py: 솎기, 0.2~0.5초 간격, 최대 개수 제한)
     bpm_update     IR로 추정한 심박수 (server/pipeline/bpm.py, 0.5~1초 간격, 화면 표시용, 판정에 안 씀)
+    question_update 시도에 배정한 질문 문장 (server/questions.py, 서버가 정한 순서, 라벨 없음)
     baseline_result 기준 측정 결과 (평균, 표준편차, 상태, 하한 적용 여부)
     trial_result   server.result.judge_trial의 결과 그대로 (judge_note, disclaimer 포함)
     error          입력원 오류 (retryable, message)
@@ -39,6 +40,7 @@ from server.judges.rule import RuleJudge
 from server.pipeline.bpm import BpmEstimate, BpmTracker, bpm_message
 from server.pipeline.tracker import (BaselineDone, DeviceRebooted, Notice, PhaseChanged, SessionEnded,
                                      SessionStarted, Tracker, TrialDone)
+from server.questions import QuestionPlanner, load_questions
 from server.result import for_web, judge_trial
 from server.source.dummy_source import DummyConfig, DummySource
 from server.source.lines import Sample
@@ -172,11 +174,28 @@ def run_pipeline(settings: Settings, emit, stop: threading.Event, source=None) -
             if bpm_state["last_reason"] not in (None, "PAUSED"):
                 emit_bpm(BpmEstimate(None, "PAUSED"))
 
+        # 질문 순서 (서버가 정함, 라벨 없음). 은행을 읽지 못하면 질문 없이 계속한다.
+        planner = None
+        try:
+            planner = QuestionPlanner(load_questions(settings.question_bank), settings.question_seed,
+                                      input_kind=settings.source, source=source.source)
+            logger.warning("질문 순서 시드: %s (QUESTION_SEED로 고정 가능)", planner.seed)
+        except Exception as e:
+            emit({"type": "error", "retryable": False, "message": f"질문 은행을 읽을 수 없어 질문 없이 진행합니다: {e}"})
+
         def handle(updates):
             for u in updates:
                 if (isinstance(u, PhaseChanged) and u.phase in BPM_PAUSE_PHASES) or isinstance(u, DeviceRebooted):
                     pause_bpm()
                 msg = update_to_message(u, source.source, judge)
+                if msg is not None and msg.get("type") == "trial_result" and planner is not None:
+                    q = planner.question_for(u.segment.session_index, u.segment.trial)
+                    msg["question_id"] = q.question_id if q else None
+                    msg["question_text"] = q.question_text if q else None
+                    msg["question_label"] = q.label if q else None
+                # 질문 배정은 단계 메시지보다 먼저 보낸다 (READY와 같은 줄에서 배정)
+                for qmsg in (planner.on_update(u) if planner is not None else []):
+                    emit(qmsg)
                 if msg is not None:
                     emit(with_session(msg, tracker))
 
@@ -237,6 +256,7 @@ class Hub:
         self.error = None          # 마지막 error (입력원이 실패한 뒤 접속해도 이유를 볼 수 있게)
         self.baseline = None       # 마지막 baseline_result
         self.bpm = None            # 마지막 bpm_update (심박 추정값)
+        self.question = None       # 마지막 question_update (현재 질문)
         self.samples = deque(maxlen=SAMPLE_HISTORY_BATCHES)   # 최근 sample_batch (그래프가 비지 않게)
         self.history_limit = history_limit
         self.lock = asyncio.Lock()
@@ -260,6 +280,8 @@ class Hub:
             self.samples.append(msg)
         elif t == "bpm_update":
             self.bpm = msg
+        elif t == "question_update":
+            self.question = msg
 
     async def publish(self, msg: dict):
         async with self.lock:
@@ -275,7 +297,8 @@ class Hub:
         """새 접속자에게 상태, 마지막 오류, 기준 측정, 마지막 단계, 최근 샘플, 지금까지의 시도 결과를
         보낸 뒤 방송 대상에 넣는다."""
         async with self.lock:
-            for msg in [self.status, self.error, self.baseline, self.phase, self.bpm, *self.samples, *self.history]:
+            for msg in [self.status, self.error, self.baseline, self.question, self.phase, self.bpm,
+                        *self.samples, *self.history]:
                 if msg is not None:
                     await ws.send_text(dumps(msg))
             self.clients.add(ws)

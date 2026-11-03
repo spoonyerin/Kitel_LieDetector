@@ -8,6 +8,8 @@
 | SERIAL_RETRY_SEC  | 1.5                                            | 포트가 없거나 끊겼을 때 다시 여는 간격 (1~2초) |
 | SERIAL_IDLE_SEC   | 5                                              | 이 시간 동안 기기 줄이 없으면 live=false (0이면 끔) |
 | BPM_INTERVAL_SEC  | 1.0                                            | 심박 추정값(bpm_update)을 보내는 간격 (0.5~1초) |
+| QUESTION_SEED     | (없음 → 서버 시작마다 무작위)                    | 질문 순서 시드. 같은 값이면 같은 순서 |
+| QUESTION_BANK     | collector/question_bank.csv                    | 질문 은행 (읽기 전용, no/item_id/question_text만 읽음) |
 | REPLAY_RUN        | data/real/experiments/run_20261103_161545      | 재생할 run 폴더 또는 raw_serial_log.txt (읽기 전용) |
 | REPLAY_SPEED      | 1.0                                            | 재생 배속 (0이면 기다리지 않음) |
 | REPLAY_MAX_WAIT   | 2.0                                            | 줄 사이 최대 대기 초 (세션 사이 긴 공백을 줄임) |
@@ -24,11 +26,12 @@
 
 import os
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB_DIST = os.path.join(REPO_ROOT, "web", "dist")
 DEFAULT_REPLAY_RUN = os.path.join(REPO_ROOT, "data", "real", "experiments", "run_20261103_161545")
+DEFAULT_QUESTION_BANK = os.path.join(REPO_ROOT, "collector", "question_bank.csv")
 
 SOURCES = ("dummy", "replay", "serial")
 DEFAULT_BAUD = 115200   # server/source/serial_source.py와 같은 값 (collector/record_session.py 1201행)
@@ -55,6 +58,8 @@ class Settings:
     serial_retry_sec: float = 1.5
     serial_idle_sec: float = 5.0
     bpm_interval_sec: float = 1.0
+    question_seed: Optional[int] = None
+    question_bank: str = DEFAULT_QUESTION_BANK
 
     def __post_init__(self):
         if not 0.5 <= self.bpm_interval_sec <= 1.0:
@@ -113,4 +118,10 @@ def load_settings(env=None) -> Settings:
         serial_retry_sec=_get(env, "SERIAL_RETRY_SEC", 1.5, float),
         serial_idle_sec=_get(env, "SERIAL_IDLE_SEC", 5.0, float),
         bpm_interval_sec=_get(env, "BPM_INTERVAL_SEC", 1.0, float),
+        question_seed=_get(env, "QUESTION_SEED", None, int),
+        question_bank=_abs(_get(env, "QUESTION_BANK", DEFAULT_QUESTION_BANK)),
     )
+
+
+def _abs(path: str) -> str:
+    return path if os.path.isabs(path) else os.path.join(REPO_ROOT, path)

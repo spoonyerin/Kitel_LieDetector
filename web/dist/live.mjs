@@ -98,6 +98,8 @@ export function trialView(r) {
   return {
     key: resultKey(r),
     title: `${r.session_id} · 질문 ${r.trial_id}`,
+    questionText: r.question_text ?? null,
+    questionLabel: r.question_label ?? null,
     decision,
     decisionLabel: DECISION_LABELS[decision],
     kind: decision === 'lie' ? 'warn' : decision === 'inconclusive' ? 'poor' : '',
@@ -128,8 +130,24 @@ export function bpmView(msg) {
   return { value: '—', unit: 'BPM', foot: `심박 계산 전${why}` };
 }
 
+// 질문 표시: 서버가 정한 순서의 질문. 같은 시도의 단계에 따라 미리 보기(READY, 흐리게) / 크게(QUESTION) /
+// 흐리게(답변 뒤) / 숨김(손 올리기, 기준 측정, 세션 종료, 다른 시도).
+export const QUESTION_MODE_BY_PHASE = {
+  READY: 'preview', QUESTION: 'active', RESPONSE: 'dim', ANALYZING: 'dim', RESULT: 'dim', ABORTED: 'dim',
+};
+export const QUESTION_HEADINGS = { preview: '다음 질문 (준비)', active: '지금 읽을 질문', dim: '방금 질문' };
+export function questionView(question, phaseMsg, session) {
+  const hidden = { mode: 'hidden', text: '', label: '', heading: '', note: '' };
+  if (!question || !question.question_text || question.trial == null) return hidden;
+  if (!phaseMsg || phaseMsg.trial !== question.trial) return hidden;
+  if (session?.index && question.session_index && session.index !== question.session_index) return hidden;
+  const mode = QUESTION_MODE_BY_PHASE[phaseMsg.phase] ?? 'hidden';
+  if (mode === 'hidden') return hidden;
+  return { mode, text: question.question_text, label: question.question_label ?? '', heading: QUESTION_HEADINGS[mode], note: question.order_note ?? '' };
+}
+
 // 상태
-export const initialState = () => ({ status: null, phase: null, session: null, bpm: null, events: [], baseline: null, results: [], samples: [], error: null });
+export const initialState = () => ({ status: null, phase: null, session: null, bpm: null, question: null, events: [], baseline: null, results: [], samples: [], error: null });
 export function batchToPoints(b) {
   const n = Array.isArray(b?.time_ms) ? b.time_ms.length : 0;
   return Array.from({ length: n }, (_, i) => ({
@@ -149,6 +167,7 @@ export function reduce(state, msg) {
     }
     case 'baseline_result': return { ...state, baseline: msg };
     case 'bpm_update': return { ...state, bpm: msg };
+    case 'question_update': return { ...state, question: msg };
     case 'trial_result': {
       const key = resultKey(msg);
       const results = [...state.results.filter(r => resultKey(r) !== key), msg].slice(-MAX_RESULTS);

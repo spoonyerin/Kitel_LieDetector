@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  UNTRAINED_BADGE, WINDOW_MS, batchToPoints, bpmView, connectLive, initialState, inputLabel, isLive, latestResult,
+  UNTRAINED_BADGE, WINDOW_MS, batchToPoints, bpmView, connectLive, questionView, initialState, inputLabel, isLive, latestResult,
   normalize, noticeText, phaseDisplay, phaseStep, reduce, sessionLabel, signalHeading, streamStatusText, trialView,
   visibleWarnings, wsUrl,
 } from '../dist/live.mjs';
@@ -178,6 +178,37 @@ test('BPM shows a rounded estimate with a label, and "심박 계산 전" only wi
   let s = reduce(initialState(), { type: 'bpm_update', bpm: 80, reason: 'OK' });
   assert.equal(s.bpm.bpm, 80);
   assert.equal(initialState().bpm, null); // 재연결하면 서버가 마지막 값을 다시 보낸다
+});
+
+test('question: preview in READY, large in QUESTION, dim afterwards, hidden otherwise', () => {
+  const q = { type: 'question_update', session_index: 1, trial: 2, question_id: 'Q04', question_text: '해외에 가 본 적이 있습니까?',
+    question_label: '본 질문 1/5', order_note: '질문 순서는 서버가 정합니다. 진행자는 화면의 질문을 읽어 주세요.', exhausted: false };
+  const phase = (p, trial = 2) => ({ type: 'phase_update', phase: p, trial });
+  const session = { index: 1, active: true };
+  assert.equal(questionView(q, phase('READY'), session).mode, 'preview');
+  const active = questionView(q, phase('QUESTION'), session);
+  assert.equal(active.mode, 'active'); assert.equal(active.text, '해외에 가 본 적이 있습니까?');
+  assert.equal(active.heading, '지금 읽을 질문'); assert.equal(active.label, '본 질문 1/5'); assert.match(active.note, /서버가 정합니다/);
+  for (const p of ['RESPONSE', 'ANALYZING', 'RESULT', 'ABORTED']) assert.equal(questionView(q, phase(p), session).mode, 'dim', p);
+  for (const p of ['PLACE_HAND', 'BASELINE', 'SESSION_END']) assert.equal(questionView(q, phase(p, 0), session).mode, 'hidden', p);
+  assert.equal(questionView(q, phase('QUESTION', 3), session).mode, 'hidden');          // 다른 시도
+  assert.equal(questionView(q, phase('QUESTION'), { index: 2, active: true }).mode, 'hidden'); // 다른 세션
+  assert.equal(questionView({ ...q, question_text: null, trial: null }, phase('QUESTION'), session).mode, 'hidden'); // 세션 종료로 비움
+  assert.equal(questionView(null, phase('QUESTION'), session).mode, 'hidden');
+  const exhausted = questionView({ ...q, question_text: '준비된 질문을 모두 사용했습니다.', exhausted: true, question_label: '질문 없음' }, phase('QUESTION'), session);
+  assert.equal(exhausted.text, '준비된 질문을 모두 사용했습니다.');
+});
+
+test('replay question note says the order may differ from the recording', () => {
+  const q = { session_index: 1, trial: 1, question_text: '형제나 자매가 있습니까?', question_label: '연습 질문',
+    order_note: '재생: 기록 당시 실제로 물은 질문과 다를 수 있습니다. 서버가 정한 예시 순서입니다.' };
+  assert.match(questionView(q, { phase: 'QUESTION', trial: 1 }, { index: 1 }).note, /기록 당시 실제로 물은 질문과 다를 수 있습니다/);
+  let s = reduce(initialState(), { type: 'question_update', ...q });
+  assert.equal(s.question.question_text, '형제나 자매가 있습니까?');
+  assert.equal(initialState().question, null);
+  const v = trialView(result({ question_text: '형제나 자매가 있습니까?', question_label: '연습 질문' }));
+  assert.equal(v.questionText, '형제나 자매가 있습니까?'); assert.equal(v.questionLabel, '연습 질문');
+  assert.equal(trialView(result()).questionText, null);
 });
 
 // ---------- 연결과 자동 재연결 (가짜 WebSocket, 가짜 타이머) ----------
