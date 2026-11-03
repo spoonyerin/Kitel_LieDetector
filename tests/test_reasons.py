@@ -57,6 +57,14 @@ def test_no_sensor_exceeded():
     ("FEATURE_NAN", "신호 값을 계산하지 못해서 이 답변은 판정하지 않았어요."),
     ("THRESHOLD_UNSET", "판정 기준이 아직 정해지지 않아서 이 답변은 판정하지 않았어요."),
     ("SOMETHING", "신호 상태가 좋지 않아서 이 답변은 판정하지 않았어요."),
+    ("RAW_NO_SAMPLES", "신호가 들어오지 않아서 이 답변은 판정하지 않았어요."),
+    ("RAW_TIME_ERROR", "신호의 시간 순서가 뒤섞여서 이 답변은 판정하지 않았어요."),
+    ("RAW_SAMPLES_LOST", "신호 일부가 전송 중에 빠져서 이 답변은 판정하지 않았어요."),
+    ("RAW_FEW_SAMPLES", "답변하는 동안의 신호가 충분히 모이지 않아서 이 답변은 판정하지 않았어요."),
+    ("RAW_PHASE_ORDER", "측정 단계 순서가 맞지 않아서 이 답변은 판정하지 않았어요."),
+    ("RAW_NO_CONTACT", "질문이나 답변 중에 손가락이 센서에서 떨어져서 이 답변은 측정에서 제외했어요."),
+    ("RAW_FSR_SAT", "손가락을 너무 세게 눌러 압력 센서가 한계에 닿아서 이 답변은 측정에서 제외했어요."),
+    ("RAW_GSR_SAT", "피부전도 센서 값이 측정 범위를 벗어나서 이 답변은 측정에서 제외했어요."),
 ])
 def test_hold_texts_are_plain(code, expected):
     assert hold_text(code) == expected
@@ -65,10 +73,28 @@ def test_hold_texts_are_plain(code, expected):
 def test_hold_texts_hide_codes():
     """쉬운 말: 화면 문장에 영문 코드나 샘플 수, σ가 들어가지 않는다 (코드는 hold_code에 따로 남는다)."""
     import re
+    from server.reasons import RAW_HOLD_KR
     for code in ("CONTACT_EVENT:CONTACT_SHIFT", "DEVICE_INVALID:HAND_OFF_LONG", "DEVICE_INVALID:WEIRD",
-                 "Q_TOO_SHORT:12", "NO_SUMMARY", "SOMETHING"):
+                 "Q_TOO_SHORT:12", "NO_SUMMARY", "SOMETHING", *RAW_HOLD_KR):
         text = hold_text(code)
         assert not re.search(r"[A-Z]{3,}|σ|샘플", text), text
+
+
+@pytest.mark.parametrize("code,expected", [
+    ("TIME_GAPS=9(max 36ms)", "신호 간격이 가끔 조금 늦었어요."),
+    ("SAMPLES_LOST=1", "신호가 조금 빠졌지만 판정에는 충분했어요."),
+    ("RATE=55.6Hz", "신호 속도가 평소와 조금 달랐어요."),
+    ("RESPONSE_DURATION=20100ms", "답변 구간 길이가 평소와 조금 달랐어요."),
+    ("READY_NO_CONTACT=236", "질문 전 준비 단계에서 손가락이 잠시 떨어졌어요."),
+    ("DEVICE_WARN=CONTACT_DIP|FSR_SAT", "기기 알림: 접촉이 잠시 약해졌어요, 압력 센서가 한계에 닿았어요."),
+    ("WHATEVER=3", "신호에 작은 문제가 있었어요."),
+])
+def test_warning_texts_are_plain(code, expected):
+    import re
+    from server.reasons import warning_text
+    text = warning_text(code)
+    assert text == expected
+    assert not re.search(r"[A-Z]{3,}|σ|샘플|\d", text), text
 
 
 def test_hold_reason_sentence_from_verdict():
@@ -131,6 +157,13 @@ def test_real_161545_decisions():
     assert t5["server_only"]["warnings"] == ["UNKNOWN_WARN_BITS=64"]
     assert not any(w.startswith("UNKNOWN_WARN_BITS") for r in results for w in r["quality"]["warnings"])
     assert t5["hold_reason"] == "손 위치가 바뀌어 이 답변은 측정에서 제외했어요."
+    # S10: 원시 샘플 검사 결과. 실측 시도는 모두 TIME_GAPS 경고가 있고 화면용 쉬운 문장이 붙는다
+    for r in results:
+        assert r["quality"]["raw_check"]["n_samples"] > 0
+        assert "신호 간격이 가끔 조금 늦었어요." in r["quality"]["warning_texts"]
+        assert not any("64" in t or "UNKNOWN" in t for t in r["quality"]["warning_texts"])
+    t1 = next(r for r in results if (r["session_id"], r["trial_id"]) == ("S01", 1))
+    assert "질문 전 준비 단계에서 손가락이 잠시 떨어졌어요." in t1["quality"]["warning_texts"]
 
 
 def test_for_web_strips_server_only():

@@ -111,6 +111,8 @@ export function trialView(r) {
     disclaimer: r.disclaimer ?? '',
     sourceLabel: r.source === 'dummy' ? '합성 신호(더미)' : '기기 기록',
     warnings: visibleWarnings(r.quality?.warnings),
+    // 화면에 작게 보여 줄 쉬운 경고 문장 (서버가 만든 warning_texts, 없으면 비움)
+    warningTexts: Array.isArray(r.quality?.warning_texts) ? r.quality.warning_texts : [],
     // 기여도 1 = 임계값. 막대는 임계값을 50%로, 2배 이상은 100%로 자른다 (화면 표시용).
     contributions: (r.contributions ?? []).map(c => ({
       sensor: c.sensor, label: SENSOR_LABELS[c.sensor] ?? c.sensor,

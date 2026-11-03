@@ -159,6 +159,17 @@ test('replay and dummy hide the place-hand prompt and say the measurement follow
   assert.equal(device.pill, '손 올리기'); assert.equal(device.title, '센서에 손을 올려 주세요.');
 });
 
+test('plain warning texts are passed to the screen; absent means none', () => {
+  const v = trialView(result({ quality: { ok: true, flags: [], warnings: ['TIME_GAPS=9(max 36ms)'], warning_texts: ['신호 간격이 가끔 조금 늦었어요.'] } }));
+  assert.deepEqual(v.warningTexts, ['신호 간격이 가끔 조금 늦었어요.']);
+  assert.deepEqual(trialView(result()).warningTexts, []);
+  assert.deepEqual(trialView(result({ quality: { ok: true, warnings: [], warning_texts: 'x' } })).warningTexts, []);
+  const held = trialView(result({ decision: 'inconclusive', contributions: [], hold_code: 'RAW_FSR_SAT',
+    hold_reason: '손가락을 너무 세게 눌러 압력 센서가 한계에 닿아서 이 답변은 측정에서 제외했어요.',
+    reasons: ['손가락을 너무 세게 눌러 압력 센서가 한계에 닿아서 이 답변은 측정에서 제외했어요.'] }));
+  assert.equal(held.decisionLabel, '보류'); assert.ok(!/[A-Z]{3,}/.test(held.holdReason));
+});
+
 test('unknown warning bits are not shown on screen', () => {
   assert.deepEqual(visibleWarnings(['UNKNOWN_WARN_BITS=64', 'DEVICE_WARN=CONTACT_DIP']), ['DEVICE_WARN=CONTACT_DIP']);
   assert.deepEqual(visibleWarnings(undefined), []);

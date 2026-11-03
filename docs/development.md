@@ -156,7 +156,7 @@ Python 서버가 `web/dist`를 같이 서빙한다 (같은 포트라 CORS 설정
 cd web; npm test
 ```
 
-2026-11-04 기준 pytest 178개, npm test 25개 통과. 실측 로그가 없으면 해당 테스트는 건너뛴다. 서버 테스트는 127.0.0.1의 빈 포트에 임시 uvicorn을 띄우고, 시리얼 테스트는 가짜 시리얼만 써서 실제 COM 포트를 열지 않는다.
+2026-11-04 기준 pytest 212개, npm test 26개 통과. 실측 로그가 없으면 해당 테스트는 건너뛴다. 서버 테스트는 127.0.0.1의 빈 포트에 임시 uvicorn을 띄우고, 시리얼 테스트는 가짜 시리얼만 써서 실제 COM 포트를 열지 않는다.
 
 수집기 테스트는 따로 실행한다 (현재 폴더 기준으로 `experiments/`를 찾으므로 11절 I8 참고):
 
@@ -346,12 +346,29 @@ class Judge(Protocol):
 
 ### 7.2 최소 품질 검사 (`server/pipeline/quality.py`)
 
-보류 코드(앞에서부터): `DEVICE_RESET`(시도 중 재부팅), `NO_SUMMARY`, `DEVICE_INVALID:<사유>`, `Q_TOO_SHORT`, `NO_RESPONSE`, `BL_SD_MISSING`, `CONTACT_EVENT:<이벤트>`.
+보류 코드(앞에서부터): `DEVICE_RESET`(시도 중 재부팅), `NO_SUMMARY`, `DEVICE_INVALID:<사유>`, `RAW_*`(원시 샘플, 아래 표), `Q_TOO_SHORT`, `NO_RESPONSE`, `BL_SD_MISSING`, `CONTACT_EVENT:<이벤트>`.
+
+원시 샘플 검사(S10): 시도마다 collector `check_segment`를 그대로 돌리고 결과를 나눈다. 판정 특징(국소 dz)이 질문·답변 샘플만 쓰므로 접촉·포화는 그 구간에 있을 때만 보류한다.
+
+| check_segment 코드 | 뜻 | 처리 |
+|---|---|---|
+| `NO_SAMPLES` | 샘플 없음 | 보류 `RAW_NO_SAMPLES` |
+| `DUP_TS`, `BACKWARDS_TS` | 같은 시각이 두 번 / 시각이 거꾸로 | 보류 `RAW_TIME_ERROR` |
+| `SERIAL_LOST` | 순번이 건너뜀 (전송 중 샘플 빠짐) | 2%(`MAX_LOST_RATIO`, 임시값) 초과면 보류 `RAW_SAMPLES_LOST`, 이하면 경고 |
+| `RESPONSE_FEW_SAMPLES` | 답변 샘플이 기대의 90% 미만 | 보류 `RAW_FEW_SAMPLES` |
+| `PHASE_ORDER` | 단계 순서가 READY→QUESTION→RESPONSE가 아님 | 보류 `RAW_PHASE_ORDER` |
+| `NO_CONTACT_SAMPLES` | contact=0 | 질문·답변 구간이면 보류 `RAW_NO_CONTACT`, 준비 구간만이면 경고 |
+| `FSR_4095`, `GSR_SAT` | ADC 상한/하한 | 질문·답변 구간이면 보류 `RAW_FSR_SAT`/`RAW_GSR_SAT`, 준비 구간만이면 경고 |
+| `TIME_GAPS` | 간격 30ms 초과 (실측 36~40ms, 모든 시도) | 경고 |
+| `RATE`, `RESPONSE_DURATION`, `PHASE_MISMATCH` | 속도 45~55Hz 밖 / 답변 20초±50ms 밖 / 단계 표시와 시각 어긋남 | 경고 |
+
+- 실측 4개 로그 38개 시도에서 이 변경 전후의 판정과 `hold_code`는 모두 같다 (2026-11-04 비교). 판정된 시도에는 `TIME_GAPS`만 나오고, 다른 코드는 이미 기기 무효로 보류된 시도에만 나왔다.
+- `trial_result.quality`에 `warning_texts`(화면에 작게 보여 줄 쉬운 문장)와 `raw_check`(검사 수치)를 더했다. 화면은 "참고 (판정에는 영향 없음)"로 작게 보여 준다. 실측 시도는 모두 "신호 간격이 가끔 조금 늦었어요."가 붙는다.
 
 - `HOLD_ON_CONTACT_EVENTS = True`: QUESTION 시작~RESPONSE 끝 사이에 `CONTACT_SHIFT`, `CONTACT_DIP`, `HAND_LOST`, `BASELINE_LOST`가 있으면 보류한다. READY나 RESULT 단계의 접촉 변화는 보류하지 않는다.
 - 경고 비트는 경고로만 남긴다. 알 수 없는 비트(`UNKNOWN_WARN_BITS`)는 화면에 보이지 않는다.
 - 화면 문장은 쉬운 말로 쓴다 (예: "손 위치가 바뀌어 이 답변은 측정에서 제외했어요."). 코드는 `hold_code`에 따로 남는다.
-- 원시 샘플 검사(`check_segment` 재사용: 결측, 역순, 끊김, 포화, 접촉 0)를 판정 보류에 쓰는 것은 미구현이다. TIME_GAPS는 보류가 아니라 경고로 둘 계획이다.
+- 기기 무효 시도에 원시 문제가 같이 있으면 `hold_code`는 기기 사유가 먼저다 (원시 코드는 `flags`에 남는다).
 
 ### 7.3 심박 추정값 (`server/pipeline/bpm.py`, 화면 표시용)
 
@@ -422,7 +439,7 @@ class Judge(Protocol):
 | 진행 추적 | 단계 순서, 실측 4개와 더미를 collector `Run`과 비교, 재부팅/INCOMPLETE | `tests/test_tracker.py` |
 | 입력원 | 재생 속도, 더미 형식·결정성·dz 식 | `tests/test_sources.py` |
 | 시리얼 | 가짜 시리얼: 줄 나누기, DTR/RTS 끄고 열기, 쓰기 0번, 끊김·재연결, 무신호, 재부팅 시 INTERRUPTED, 포트 목록 | `tests/test_serial_source.py` |
-| 특징, 품질 | 국소 dz 값과 하한, 짧은 질문, 실측 값 일치, 접촉 이벤트 정책, 경고 비트 | `tests/test_features.py`, `tests/test_quality.py` |
+| 특징, 품질 | 국소 dz 값과 하한, 짧은 질문, 실측 값 일치, 접촉 이벤트 정책, 경고 비트, 원시 샘플 코드별 보류/경고(collector `check_segment` 결과와 일치) | `tests/test_features.py`, `tests/test_quality.py` |
 | 라벨 독립성 | 라벨 키 거부, 라벨을 바꿔도 특징과 판정이 같음 | `tests/test_judges.py`, `tests/test_features.py` |
 | 판정기, 이유 | 임계값 경계, 보류, 넘은 센서만 언급, 쉬운 보류 문장, 실측 161545 회귀 | `tests/test_judges.py`, `tests/test_reasons.py` |
 | 심박 | 합성 50~150 BPM ±2, 신호 없음/약함/불규칙은 None, 판정 미사용, 실측 범위 | `tests/test_bpm.py` |
@@ -468,6 +485,7 @@ class Judge(Protocol):
   - [x] S7 IR 심박 추정값 표시 (판정 미사용)
   - [x] S8 문서 갱신
 - [x] **M2-S9** 게임 모드 질문 문장 표시 (서버가 정한 순서, `QUESTION_SEED`, 라벨 없음, `question_id` 채움) (2026-11-04)
+- [x] **M2-S10** 원시 샘플 품질 검사 연결 (`check_segment` → 보류 `RAW_*` / 경고, 쉬운 문장, 실측 판정 변화 없음) (2026-11-04)
 - [x] **M3** FastAPI + WebSocket, 웹 연결(보기 전용), 단계 표시, 배지 (2026-11-04, M2의 S4·S5로 진행)
 - [ ] **M4** 펌웨어 소스 확인 후 기기 결과와 서버 판정 일치 방안 결정, I6 결정
 - [ ] **M5** `RuleJudge` (시연 예비안), 임계값 설정 파일 — RuleJudge는 M2-S3에서 구현. 임계값은 코드 상수이며 설정 파일과 라벨 검증은 남음
@@ -488,7 +506,7 @@ M1의 수집은 개발과 병행해서 계속한다. M6은 라벨이 확정된 �
 6. **블루투스 SPP:** ESP32 Bluetooth 시리얼(SPP)로 연결하면 Windows에 COM 포트로 잡히므로 `SOURCE=serial`을 그대로 쓸 수 있을 것으로 예상한다 (미확인). DTR/RTS, 재연결, 지연을 실기기로 확인한다.
 7. **버튼 디바운스 (펌웨어):** 로그의 `IGNORED_*` 버튼 이벤트와 POLL/IRQ 중복 여부를 펌웨어 소스와 함께 확인한다.
 8. **펌웨어 확인 (I3, I7, I9, I11, I13):** LED/OLED 판정 기준, 크래시 원인, 경고 비트 64, DTR/RTS 동작.
-9. **원시 샘플 품질 검사 (7.2절):** `check_segment` 결과를 보류/경고에 반영, TIME_GAPS 원인(I10) 확인.
+9. **TIME_GAPS 원인 확인 (I10):** 원시 샘플 검사 연결은 S10에서 완료. 36~40ms 간격의 원인(펌웨어 루프, USB 전송 등)은 미확인.
 10. **참가자 별칭 입력 (I17).** 질문 표시는 S9에서 구현.
 11. **`collector/test_replay.py` 경로 문제 (I8):** collector 수정이 필요하므로 이유와 영향을 알리고 확인을 받은 뒤 진행.
 

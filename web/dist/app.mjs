@@ -314,7 +314,10 @@ function renderLiveResult() {
     });
     box.append(el('p', 'live-label', '센서별 변화 (가운데 선 = 임계값)'), bars);
   }
-  if (v.warnings.length) box.append(el('p', 'field-note', `경고: ${v.warnings.join(', ')}`));
+  if (v.warningTexts.length) { // 판정을 막지 않는 경고: 작게
+    const warn = el('ul', 'live-warnings'); v.warningTexts.forEach(t => warn.append(el('li', '', t)));
+    box.append(el('p', 'live-warnings-label', '참고 (판정에는 영향 없음)'), warn);
+  }
   box.append(el('p', 'field-note live-judge-note', v.judgeNote), el('p', 'field-note live-disclaimer', v.disclaimer));
 }
 function renderLiveRecent() {
