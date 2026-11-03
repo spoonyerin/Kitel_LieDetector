@@ -1,0 +1,14 @@
+# Claude Code (로컬 전용)
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+
+# 실측 데이터 (참가자 생체신호, 올리지 않음)
+data/
+
+# 파이썬, 노드
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+.env

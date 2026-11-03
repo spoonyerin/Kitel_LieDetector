@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#174e45">
+  <meta name="description" content="TruthPulse 생체신호 기반 게임. 개인 기준 측정부터 실시간 신호 확인, 질문별 결과와 기록까지.">
+  <title>TruthPulse · 생체신호 게임</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23174e45'/%3E%3Cpath d='M5 17h6l3-8 5 16 3-8h5' fill='none' stroke='%23c8edab' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./styles.css">
+  <script type="module" src="./app.mjs"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">본문으로 이동</a>
+  <aside class="sidebar">
+    <a class="brand" href="#dashboard" aria-label="TruthPulse 홈"><span class="brand-icon" aria-hidden="true">ϟ</span>TruthPulse<span class="brand-dot">.</span></a>
+    <div class="workspace-label">YOUR PERSONAL SIGNAL LAB</div>
+    <nav aria-label="주요 메뉴">
+      <a href="#dashboard" data-page="dashboard" class="nav-item active"><span aria-hidden="true">◫</span>라이브 세션</a>
+      <a href="#history" data-page="history" class="nav-item"><span aria-hidden="true">≡</span>측정 기록<span class="nav-count" id="record-count">0</span></a>
+      <a href="#method" data-page="method" class="nav-item"><span aria-hidden="true">⌘</span>알고리즘 설계</a>
+    </nav>
+    <div class="sidebar-bottom"><div class="lab-caption">KITEL PROJECT / 2026</div><p>작은 변화에도,<br>우리 몸은 이야기합니다.</p><div class="version">TruthPulse Lab <span>v0.1</span></div></div>
+  </aside>
+  <div class="shell">
+    <header class="topbar"><div class="breadcrumb">워크스페이스 <span>/</span> <strong id="page-name">라이브 세션</strong></div><div class="top-actions"><span class="demo-pill"><i></i>데모 모드</span><button id="settings-open" class="icon-button" aria-label="측정 설정 열기">⚙</button><span class="avatar" aria-label="KITEL 연구실">K</span></div></header>
+    <main id="main">
+      <section id="dashboard-page" class="page">
+        <div class="page-heading"><div><p class="eyebrow">FEEL THE SIGNAL</p><h1>몸의 변화를 읽는 시간<span>.</span></h1><p class="subtitle">나만의 기준을 만들고, 답변 속 생체신호를 살펴보세요.</p></div><button class="button secondary" id="new-session">↻ 새 세션</button></div>
+        <div class="notice"><span class="notice-icon">i</span><p><strong>지금은 가상 데이터로 체험 중입니다.</strong> 실제 센서와 판정 모델은 연결되지 않았어요.</p><a href="#method">개발 방향 보기 <span aria-hidden="true">↗</span></a></div>
+        <div class="session-strip"><div class="session-id"><span class="tiny-dot"></span><strong id="session-label">SESSION</strong><span id="participant-display">참가자 P01</span></div><ol class="steps" aria-label="측정 단계"><li id="step-baseline" class="current"><b>01</b> 기준 측정</li><li id="step-question"><b>02</b> 질문과 답변</li><li id="step-result"><b>03</b> 결과 확인</li></ol></div>
+        <div class="dashboard-grid">
+          <div class="signal-column">
+            <div class="section-heading"><h2>실시간 생체신호 <span class="live-dot"></span></h2><span class="muted" id="stream-status">가상 신호 수신 중</span></div>
+            <div class="metric-grid">
+              <article class="metric-card ppg-card"><div class="metric-title"><span class="sensor-symbol">♡</span> 심박수 <span class="sensor-code">PPG</span></div><div class="metric-value"><strong id="hr-value">—</strong><span>BPM</span></div><canvas id="hr-spark" class="spark" role="img" aria-label="가상 심박수 최근 변화 그래프"></canvas><div class="metric-foot"><span>개인 기준</span><strong id="hr-baseline">측정 전</strong></div></article>
+              <article class="metric-card gsr-card"><div class="metric-title"><span class="sensor-symbol">⌁</span> 피부 반응 <span class="sensor-code">GSR</span></div><div class="metric-value"><strong id="gsr-value">—</strong><span>a.u.</span></div><canvas id="gsr-spark" class="spark" role="img" aria-label="가상 피부 반응 최근 변화 그래프"></canvas><div class="metric-foot"><span>개인 기준</span><strong id="gsr-baseline">측정 전</strong></div></article>
+              <article class="metric-card fsr-card"><div class="metric-title"><span class="sensor-symbol">◎</span> 손가락 압력 <span class="sensor-code">FSR</span></div><div class="metric-value"><strong id="fsr-value">—</strong><span>a.u.</span></div><canvas id="fsr-spark" class="spark" role="img" aria-label="가상 손가락 압력 최근 변화 그래프"></canvas><div class="metric-foot"><span>개인 기준</span><strong id="fsr-baseline">측정 전</strong></div></article>
+            </div>
+            <article class="chart-panel"><div class="chart-header"><div><h2>신호 타임라인</h2><p id="chart-subtitle">센서별 변화를 같은 시간축에서 확인하세요.</p></div><div class="legend"><span><i class="hr-color"></i>PPG</span><span><i class="gsr-color"></i>GSR</span><span><i class="fsr-color"></i>FSR</span></div></div><div class="plot-wrap"><canvas id="timeline" role="img" aria-label="PPG, GSR, FSR 가상 신호의 최근 20초 타임라인. 세로축은 화면 표시용 상대 크기입니다."></canvas><span class="plot-caption">상대 크기 · 화면 표시용</span></div><div class="chart-footer"><span><span class="tiny-dot"></span> 최근 20초</span><span>GSR · FSR은 보정 전 상대값(a.u.)</span></div></article>
+            <article class="round-panel"><div class="section-heading"><h2>이번 세션의 기록</h2><a href="#history" class="text-link">전체 보기 ↗</a></div><div id="recent-rounds" class="recent-rounds"><div class="empty-inline"><span>⌁</span><p>첫 번째 질문을 기다리고 있어요.<br><small>기준 측정 후 질문을 시작해 보세요.</small></p></div></div></article>
+          </div>
+          <div class="control-column">
+            <article class="control-card"><div class="control-top"><span class="eyebrow">SESSION CONTROL</span><span id="phase-pill" class="status-pill">준비 완료</span></div><h2 id="control-title">먼저, 나만의 기준부터.</h2><p id="control-description">편안한 상태의 신호를 모아 이번 세션의 개인 기준을 만들어요.</p>
+              <div class="calibration-visual" id="calibration-visual"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="signal-emblem"><svg viewBox="0 0 100 60" aria-hidden="true"><path d="M0 30h20l10-21 17 45 13-32 9 8h31"/></svg></div><span class="float-tag tag-ppg">PPG</span><span class="float-tag tag-gsr">GSR</span><span class="float-tag tag-fsr">FSR</span></div>
+              <div id="question-fields" hidden><label for="question">이번 질문</label><textarea id="question" rows="2" maxlength="180">지금 떠올린 숫자는 짝수인가요?</textarea><button id="next-question" class="text-link small-button">다른 질문 불러오기 ↻</button><label for="scenario">시연할 신호 패턴</label><select id="scenario"><option value="calm">작은 변화</option><option value="reactive">큰 변화</option><option value="poor">접촉 불량</option></select><p class="field-note">시연 패턴은 실제 정답이나 학습된 판정이 아닙니다.</p></div>
+              <div class="progress-info"><span id="progress-label">데모 기준 측정</span><strong id="progress-time">8초</strong></div><progress id="phase-progress" max="100" value="0" aria-label="측정 진행률"></progress>
+              <button id="primary-action" class="button primary">개인 기준 측정 시작 <span aria-hidden="true">↗</span></button><button id="cancel-action" class="button quiet" hidden>측정 취소</button><p class="control-hint" id="control-hint">실제 측정 시간은 센서 실험 후 결정합니다.</p>
+            </article>
+            <article class="result-card" id="result-card"><div class="section-heading"><h2>이번 답변의 결과</h2><span class="outline-pill">DEMO</span></div><div id="result-content" aria-live="polite"><div class="result-placeholder">—</div><p class="result-message">질문을 마치면 변화 요약이 여기에 나타납니다.</p></div><div id="label-controls" hidden><label for="ground-truth">실험 정답 기록 <span>(선택)</span></label><select id="ground-truth"><option value="">미표기</option><option value="0">진실 · 0</option><option value="1">거짓 · 1</option></select><p class="field-note">정답은 기록에만 저장하며 시연 결과 계산에 사용하지 않습니다.</p></div></article>
+            <div class="device-note"><span class="device-icon">▣</span><div><strong>하드웨어 연결 전</strong><p>현재 브라우저에서 가상 신호를 생성합니다.<br>촉각 피드백 장치는 작동하지 않습니다.</p></div></div>
+          </div>
+        </div>
+      </section>
+      <section id="history-page" class="page" hidden>
+        <div class="page-heading"><div><p class="eyebrow">YOUR SIGNAL ARCHIVE</p><h1>측정 기록<span>.</span></h1><p class="subtitle">질문마다 남긴 변화를 다시 살펴보세요.</p></div><div class="button-row"><button class="button secondary" id="export-csv">CSV 내보내기 ↓</button><button class="button secondary" id="export-json">원본 JSON ↓</button></div></div>
+        <div class="notice"><span class="notice-icon">i</span><p>이 브라우저에 최대 100건의 <strong>가상 측정 기록</strong>을 저장합니다. 학습용 실제 데이터로 사용하지 마세요.</p></div>
+        <div class="history-toolbar"><label class="search-field"><span aria-hidden="true">⌕</span><input id="history-search" type="search" placeholder="질문 또는 참가자 검색" aria-label="측정 기록 검색"></label><span id="history-total" class="muted">0개의 기록</span></div><div class="history-panel" id="history-content"></div><div class="history-bottom"><span>브라우저 저장 공간을 지우면 기록이 삭제됩니다.</span><button id="clear-history" class="danger-link">데모 기록 모두 삭제</button></div>
+      </section>
+      <section id="method-page" class="page" hidden>
+        <div class="page-heading"><div><p class="eyebrow">FROM SIGNAL TO MODEL</p><h1>판정 알고리즘의 설계<span>.</span></h1><p class="subtitle">실험으로 비교하고, 검증한 계산을 ESP32로 옮깁니다.</p></div><span class="outline-pill">설계 제안 · 모델 미학습</span></div>
+        <div class="method-intro"><h2>로지스틱 회귀를 첫 후보로.<br>채택 여부는 실제 데이터로.</h2><p>생체신호의 변화에는 긴장, 움직임, 접촉 상태도 영향을 줍니다. 개인 기준 대비 반응이 실험의 진실·거짓 응답을 구분하는지 먼저 확인합니다. 현재 데모는 신호 변화만 요약하며 거짓 확률을 계산하지 않습니다.</p></div>
+        <div class="method-grid">
+          <article class="method-step"><span>01 / 실험 설계</span><h2>정답을 아는 질문부터</h2><p>숫자 카드처럼 정답을 확인할 수 있는 과제를 사용합니다. 진실과 거짓 응답 수를 비슷하게 맞추고 순서를 무작위로 섞습니다.</p><p class="method-detail">제안하는 파일럿: 참가자 10~20명 × 각 20~30회. 충분한 데이터 규모를 보장하는 수치는 아니며 센서 안정성과 실험 절차를 확인하는 출발점입니다.</p></article>
+          <article class="method-step"><span>02 / 데이터 수집</span><h2>기준, 답변, 회복을 구분</h2><p>초기 안정화 구간을 제외하고 개인 기준을 측정합니다. 질문 시작과 답변 시점을 기록하고 답변 후 반응도 같은 길이로 관찰합니다.</p><p class="method-detail">파일럿 시작안: 안정 기준 30초, 질문당 관찰 10~15초, 회복 15~30초. 시간과 센서별 샘플링 주기는 실제 신호를 보고 조정합니다.</p></article>
+          <article class="method-step"><span>03 / 전처리·특징</span><h2>작고 명확한 특징부터</h2><p>PPG: 평균 심박 변화, 맥파 진폭 변화. GSR: 기준 대비 최대 변화, 반응 면적. FSR: 평균 압력 변화, 변동 정도. 먼저 6개 안팎으로 시작합니다.</p><p class="method-detail">접촉 불량·결측·포화는 판정 보류. 기준 표준편차가 너무 작을 때도 재측정합니다. GSR·FSR 단위와 변화 방향은 회로 보정 후 확정합니다.</p></article>
+          <article class="method-step"><span>04 / 모델 비교</span><h2>단순 규칙과 나란히 비교</h2><p>항상 다수 클래스를 내는 기준 모델, 단순 변화량 규칙, 로지스틱 회귀를 동일한 데이터 분할로 비교합니다. 필요할 때만 얕은 결정트리를 추가합니다.</p><p class="method-detail">특징 선택과 전체 데이터의 스케일링은 학습 구간 안에서만 수행합니다. 참가자 기준값은 해당 세션의 답변 전 안정 데이터로 계산합니다.</p></article>
+          <article class="method-step"><span>05 / 검증·임계값</span><h2>처음 보는 사람에게도 통할까?</h2><p>참가자 단위로 학습·검증·최종 평가를 나눕니다. 균형 정확도, 거짓 응답 검출률, 진실을 거짓으로 오판한 비율을 함께 봅니다.</p><p class="method-detail">임계값은 검증 데이터에서 선택하고 최종 평가 데이터는 마지막에 한 번만 사용합니다. 성능이 불안정하면 모델 채택을 보류합니다.</p></article>
+          <article class="method-step"><span>06 / ESP32 이식</span><h2>검증한 계산을 장치로</h2><p>필터, 특징 순서, 정규화 값, 학습된 계수와 임계값을 함께 고정합니다. 동일한 녹화 신호로 Python과 ESP32의 계산 결과를 비교합니다.</p><p class="method-detail">실시간 적용을 고려해 인과적 필터를 사용합니다. 양방향 필터를 실험에 썼다면 최종 장치용 처리와 차이를 재검증해야 합니다.</p></article>
+        </div>
+        <div class="method-sources"><h2>설계 근거</h2><a href="https://scikit-learn.org/stable/modules/cross_validation.html#cross-validation-iterators-for-grouped-data" target="_blank" rel="noopener noreferrer">scikit-learn · 참가자별 교차 검증 ↗</a><a href="https://scikit-learn.org/stable/common_pitfalls.html#data-leakage" target="_blank" rel="noopener noreferrer">scikit-learn · 데이터 누수 방지 ↗</a><a href="https://scikit-learn.org/stable/modules/classification_threshold.html" target="_blank" rel="noopener noreferrer">scikit-learn · 판정 임계값 선택 ↗</a><a href="https://www.nationalacademies.org/read/10420/chapter/5" target="_blank" rel="noopener noreferrer">National Academies · 생체반응과 거짓말 탐지의 한계 ↗</a></div>
+      </section>
+      <footer class="footer"><span>TruthPulse <b>LAB</b></span><span>신호를 관찰하고, 변화를 발견하세요.</span><span>2026 KITEL</span></footer>
+    </main>
+  </div>
+  <dialog id="settings-dialog"><form id="settings-form"><div class="dialog-heading"><h2>측정 설정</h2><button class="icon-button" type="button" id="settings-close" aria-label="설정 닫기">×</button></div><p class="subtitle">변경하면 새 세션으로 시작합니다. 이전 기록은 유지됩니다.</p><label for="participant">참가자 별칭</label><input id="participant" maxlength="24" required value="P01" autocomplete="off"><label for="baseline-duration">데모 기준 측정 시간</label><select id="baseline-duration"><option value="8">8초</option><option value="15">15초</option><option value="30">30초</option></select><label for="answer-duration">데모 답변 측정 시간</label><select id="answer-duration"><option value="6">6초</option><option value="10">10초</option><option value="15">15초</option></select><p class="field-note">실제 실험의 측정 시간과 별도로 동작하는 데모 설정입니다.</p><button class="button primary" type="submit">설정 적용</button></form></dialog>
+  <dialog id="clear-dialog"><h2>데모 기록을 모두 삭제할까요?</h2><p>이 브라우저에 저장한 기록을 지웁니다.<br>필요한 기록은 먼저 내보내세요.</p><div class="button-row"><button class="button secondary" id="clear-cancel">취소</button><button class="button danger" id="clear-confirm">모두 삭제</button></div></dialog>
+  <dialog id="detail-dialog"><div class="dialog-heading"><h2>답변 기록 상세</h2><button id="detail-close" class="icon-button" aria-label="상세 닫기">×</button></div><div id="detail-content"></div></dialog>
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
