@@ -8,13 +8,18 @@
 parse : 원시 로그를 줄 해석기로 읽고 종류별 개수, 요약의 valid/reason 분포, 해석 불가 줄 예시를 출력한다.
 replay: 원시 로그를 재생해 진행 추적기에 넣고 단계 변화와 시도별 결과를 출력한다 (source=hardware).
 dummy : 합성 신호를 진행 추적기에 넣고 같은 형식으로 출력한다 (source=dummy).
+replay/dummy에 --judge를 주면 시도마다 RuleJudge로 판정하고 이유를 출력한다 (--json: trial_result JSON).
+--fsr-th, --gsr-th, --min-sensors는 임계값 후보를 비교하는 탐색용이며 rule.py의 상수를 바꾸지 않는다.
 """
 
 import argparse
+import json
 import math
 import sys
 from collections import Counter
 
+from server.judges.rule import RuleJudge
+from server.result import judge_trial
 from server.pipeline.tracker import (BaselineDone, DeviceRebooted, Notice, PhaseChanged,
                                      SessionEnded, SessionStarted, Tracker, TrialDone)
 from server.source.dummy_source import PATTERNS, DummyConfig, DummySource
@@ -116,33 +121,74 @@ def _print_update(u, brief):
         print(f"    {e.esp_time_ms / 1000:9.3f}s 알림 {e.name} {e.detail}")
 
 
-def _run(source, brief) -> int:
+DECISION_KR = {"truth": "진실", "lie": "거짓", "inconclusive": "보류"}
+
+
+def _print_result(res, as_json):
+    if as_json:
+        print(json.dumps(res, ensure_ascii=False))
+        return
+    f = res["features"]
+    loc = (f"국소 fsr={_fmt(f['fsr_local_dz'])} gsr={_fmt(f['gsr_local_dz'])} | "
+           f"기기 fsr={_fmt(f['fsr_dz'])} gsr={_fmt(f['gsr_dz'])}")
+    print(f"  [판정] {res['session_id']} T{res['trial_id']:02d} {DECISION_KR[res['decision']]:<2} "
+          f"score={res['score']} trained={res['judge']['trained']} | {loc}")
+    for r in res["reasons"]:
+        print(f"         - {r}")
+    if res["quality"]["warnings"]:
+        print(f"         (경고: {', '.join(res['quality']['warnings'])})")
+
+
+def _run(source, brief, judge=None, as_json=False) -> int:
     tracker = Tracker(source.source)
-    print(f"입력원: {source.name} (source={source.source})")
-    done = []
-    for line in source.lines():
-        for u in tracker.feed_line(line):
-            _print_update(u, brief)
+    quiet = as_json  # JSON 출력일 때는 판정 결과만 한 줄씩 낸다
+    if not quiet:
+        print(f"입력원: {source.name} (source={source.source})")
+        if judge:
+            print(f"판정기: {judge.name} {judge.version} (trained={judge.trained}) — {judge.note}")
+    done, results = [], []
+
+    def handle(updates):
+        for u in updates:
+            if not quiet:
+                _print_update(u, brief)
             if isinstance(u, TrialDone):
                 done.append(u.segment)
-    for u in tracker.close():
-        _print_update(u, brief)
-        if isinstance(u, TrialDone):
-            done.append(u.segment)
+                if judge:
+                    res = judge_trial(u.segment, source.source, judge)
+                    results.append(res)
+                    _print_result(res, as_json)
 
+    for line in source.lines():
+        handle(tracker.feed_line(line))
+    handle(tracker.close())
+
+    if quiet:
+        return 0
     print(f"\n시도 {len(done)}개: " + ", ".join(f"{k} {v}" for k, v in sorted(Counter(t.status for t in done).items())))
+    if judge:
+        print("판정: " + ", ".join(f"{DECISION_KR[k]} {v}" for k, v in
+                                  sorted(Counter(r["decision"] for r in results).items())))
     print(f"세션 {len(tracker.sessions)}개, 세션 밖 샘플 {tracker.ignored_samples}개, 해석 불가 줄 {tracker.bad_lines}개")
     return 0
 
 
+def _make_judge(args):
+    if not args.judge:
+        return None
+    return RuleJudge(fsr_threshold=args.fsr_th, gsr_threshold=args.gsr_th, min_sensors=args.min_sensors)
+
+
 def cmd_replay(args) -> int:
-    return _run(ReplaySource(args.path, speed=args.speed, max_wait=args.max_wait), args.brief)
+    return _run(ReplaySource(args.path, speed=args.speed, max_wait=args.max_wait), args.brief,
+                _make_judge(args), args.json)
 
 
 def cmd_dummy(args) -> int:
     patterns = [p.strip() for p in args.patterns.split(",") if p.strip()]
     cfg = DummyConfig(trials=args.trials, patterns=patterns, seed=args.seed)
-    return _run(DummySource(cfg, speed=args.speed, max_wait=args.max_wait), args.brief)
+    return _run(DummySource(cfg, speed=args.speed, max_wait=args.max_wait), args.brief,
+                _make_judge(args), args.json)
 
 
 def main(argv=None) -> int:
@@ -158,6 +204,11 @@ def main(argv=None) -> int:
         sp.add_argument("--speed", type=float, default=1.0, help="재생 배속 (0이면 기다리지 않음, 기본 1)")
         sp.add_argument("--max-wait", type=float, default=2.0, help="한 번에 기다리는 최대 초 (기본 2)")
         sp.add_argument("--brief", action="store_true", help="단계 변화와 알림은 출력하지 않음")
+        sp.add_argument("--judge", action="store_true", help="시도마다 RuleJudge로 판정하고 이유를 출력")
+        sp.add_argument("--json", action="store_true", help="--judge와 함께: trial_result JSON을 한 줄씩 출력")
+        sp.add_argument("--fsr-th", type=float, default=None, help="탐색용 FSR 임계값 (기본: rule.py 상수)")
+        sp.add_argument("--gsr-th", type=float, default=None, help="탐색용 GSR 임계값 (기본: rule.py 상수)")
+        sp.add_argument("--min-sensors", type=int, default=None, help="탐색용 최소 센서 수 (기본: rule.py 상수)")
 
     p = sub.add_parser("replay", help="원시 로그를 재생해 시도별 결과를 출력한다")
     p.add_argument("path", help="run 폴더 또는 raw_serial_log.txt 경로")
