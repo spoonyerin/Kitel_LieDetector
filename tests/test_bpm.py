@@ -136,13 +136,20 @@ def test_bpm_message_format():
 
 
 # ---------- 판정과 분리 ----------
-def test_bpm_is_not_used_by_judgement():
-    """BPM은 화면 표시용: 판정 관련 코드는 bpm 모듈을 쓰지 않고, 판정 특징에도 없다."""
+def test_bpm_is_not_used_by_judgement(monkeypatch):
+    """BPM은 판정에 쓰지 않는다: 판정기(rule)와 품질 검사는 bpm을 쓰지 않고, RuleJudge가 받는 특징에 심박이 없다.
+
+    S11부터 학습용 전체 특징(hr_delta 등)이 bpm.py를 재사용해 trial_result.features에 들어가지만,
+    판정기에는 기존 4개 특징만 넘어간다 (판정기 입력을 가로채 확인).
+    """
     from server import result
     from server.judges import rule
-    from server.pipeline import features, quality
-    for mod in (rule, result, features, quality):
+    from server.pipeline import quality
+    for mod in (rule, quality):
         assert "bpm" not in inspect.getsource(mod).lower(), mod.__name__
+    seen = []
+    orig = rule.RuleJudge.judge
+    monkeypatch.setattr(rule.RuleJudge, "judge", lambda self, f, b, q: (seen.append(set(f)), orig(self, f, b, q))[1])
     from server.pipeline.tracker import Tracker, TrialDone
     from server.source.dummy_source import DummyConfig, dummy_items
     tr = Tracker("dummy")
@@ -150,7 +157,8 @@ def test_bpm_is_not_used_by_judgement():
     for _, line in dummy_items(DummyConfig(trials=1, patterns=["calm"])):
         done += [u.segment for u in tr.feed_line(line) if isinstance(u, TrialDone)]
     res = result.judge_trial(done[0], "dummy")
-    assert set(res["features"]) == {"fsr_local_dz", "gsr_local_dz", "fsr_dz", "gsr_dz"}
+    assert seen == [{"fsr_local_dz", "gsr_local_dz", "fsr_dz", "gsr_dz"}]
+    assert not any("hr" in k or "bpm" in k for k in seen[0])
 
 
 # ---------- 더미와 실측 ----------

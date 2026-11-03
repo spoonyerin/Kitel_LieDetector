@@ -38,7 +38,7 @@ from fastapi.staticfiles import StaticFiles
 from server.config import WEB_DIST, Settings, load_settings
 from server.judges.rule import RuleJudge
 from server.pipeline.bpm import BpmEstimate, BpmTracker, bpm_message
-from server.pipeline.tracker import (BaselineDone, DeviceRebooted, Notice, PhaseChanged, SessionEnded,
+from server.pipeline.tracker import (BaselineDone, baseline_for, DeviceRebooted, Notice, PhaseChanged, SessionEnded,
                                      SessionStarted, Tracker, TrialDone)
 from server.questions import QuestionPlanner, load_questions
 from server.result import for_web, judge_trial
@@ -109,7 +109,7 @@ def _event_msg(name, detail="", trial=0, esp_session=None, esp_time_ms=None):
                       "esp_session": esp_session, "esp_time_ms": esp_time_ms}}
 
 
-def update_to_message(u, source_label: str, judge) -> Optional[dict]:
+def update_to_message(u, source_label: str, judge, tracker=None) -> Optional[dict]:
     """추적기 알림 하나를 웹 메시지로 바꾼다. 보낼 것이 없으면 None."""
     if isinstance(u, PhaseChanged):
         return {"type": "phase_update", "phase": u.phase, "trial": u.trial, "esp_session": u.esp_session,
@@ -124,7 +124,8 @@ def update_to_message(u, source_label: str, judge) -> Optional[dict]:
     if isinstance(u, DeviceRebooted):
         return _event_msg("DEVICE_REBOOT", u.text)
     if isinstance(u, TrialDone):
-        res = judge_trial(u.segment, source_label, judge)
+        res = judge_trial(u.segment, source_label, judge,
+                          baseline_segment=baseline_for(tracker, u.segment) if tracker else None)
         hidden = res.get("server_only", {}).get("warnings")
         if hidden:  # 화면에는 보이지 않는 경고: 서버 로그에만 남긴다
             logger.warning("서버 전용 경고 %s T%02d: %s", res["session_id"], res["trial_id"], ", ".join(hidden))
@@ -187,7 +188,7 @@ def run_pipeline(settings: Settings, emit, stop: threading.Event, source=None) -
             for u in updates:
                 if (isinstance(u, PhaseChanged) and u.phase in BPM_PAUSE_PHASES) or isinstance(u, DeviceRebooted):
                     pause_bpm()
-                msg = update_to_message(u, source.source, judge)
+                msg = update_to_message(u, source.source, judge, tracker)
                 if msg is not None and msg.get("type") == "trial_result" and planner is not None:
                     q = planner.question_for(u.segment.session_index, u.segment.trial)
                     msg["question_id"] = q.question_id if q else None

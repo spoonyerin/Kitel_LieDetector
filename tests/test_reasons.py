@@ -121,7 +121,8 @@ def test_trial_result_format_dummy():
         assert r["score"] is None and r["judge"] == {"name": "rule", "version": "0.0.1", "trained": False}
         assert "라벨 데이터로 맞추거나 검증하지 않았습니다" in r["judge_note"]
         assert r["disclaimer"] == DISCLAIMER and r["device_verdict"] is None
-        assert set(r["features"]) == {"fsr_local_dz", "gsr_local_dz", "fsr_dz", "gsr_dz"}
+        # 판정에 쓴 4개 특징 + 학습용 전체 특징 (S11)
+        assert {"fsr_local_dz", "gsr_local_dz", "fsr_dz", "gsr_dz"} <= set(r["features"])
     assert results[2]["hold_code"] == "DEVICE_INVALID:HAND_OFF_LONG" and results[2]["hold_reason"]
     assert results[1]["hold_reason"] is None
     assert all(c["over_threshold"] for c in results[1]["contributions"])
