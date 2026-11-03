@@ -19,12 +19,14 @@ replay/dummy에 --judge를 주면 시도마다 RuleJudge로 판정하고 이유�
 import argparse
 import json
 import math
+import os
 import sys
 from collections import Counter
+from typing import Optional
 
 from server.judges.rule import RuleJudge
 from server.result import judge_trial
-from server.pipeline.tracker import (BaselineDone, DeviceRebooted, Notice, PhaseChanged,
+from server.pipeline.tracker import (BaselineDone, baseline_for, DeviceRebooted, Notice, PhaseChanged,
                                      SessionEnded, SessionStarted, Tracker, TrialDone)
 from server.source.dummy_source import PATTERNS, DummyConfig, DummySource
 from server.source.lines import (Bad, BaselineSummary, Event, LineParser, Sample,
@@ -162,7 +164,8 @@ def _run(source, brief, judge=None, as_json=False) -> int:
             if isinstance(u, TrialDone):
                 done.append(u.segment)
                 if judge:
-                    res = judge_trial(u.segment, source.source, judge)
+                    res = judge_trial(u.segment, source.source, judge,
+                                      baseline_segment=baseline_for(tracker, u.segment))
                     results.append(res)
                     _print_result(res, as_json)
 
@@ -241,6 +244,82 @@ def e_text(reason):
     return REASON_TEXT.get(reason, "")
 
 
+PROTECTED_DIRS = ("data/real", "collector")   # features 출력을 쓰면 안 되는 폴더 (저장소 기준)
+
+
+def _inside_protected(path: str) -> Optional[str]:
+    """path가 보호 폴더 안이면 그 폴더 이름을 돌려준다."""
+    from server.config import REPO_ROOT
+    target = os.path.realpath(path)
+    for rel in PROTECTED_DIRS:
+        base = os.path.realpath(os.path.join(REPO_ROOT, rel))
+        try:
+            if os.path.commonpath([target, base]) == base:
+                return rel
+        except ValueError:   # 다른 드라이브
+            continue
+    return None
+
+
+def feature_rows(log_path: str, run_name: str):
+    """원시 로그 하나의 시도별 특징 행 (판정 결과는 참고용, 라벨 없음)."""
+    from server.judges.rule import RuleJudge
+    from server.pipeline.features import FEATURE_NAMES
+    tracker, judge, rows = Tracker("hardware"), RuleJudge(), []
+
+    def add(updates):
+        for u in updates:
+            if not isinstance(u, TrialDone):
+                continue
+            t = u.segment
+            res = judge_trial(t, "hardware", judge, baseline_segment=baseline_for(tracker, t))
+            info = res["feature_info"]
+            row = {"run": run_name, "session_id": res["session_id"], "trial_id": t.trial,
+                   "baseline_id": t.baseline_id, "device_status": t.status, "decision": res["decision"],
+                   "hold_code": res["hold_code"] or "", "quality_ok": res["quality"]["ok"],
+                   "fs": info["fs"], "baseline_found": info["baseline_found"], "n_baseline": info["n_baseline"],
+                   "n_question": info["n_question"], "n_response": info["n_response"],
+                   "flat": "|".join(info["flat"])}
+            for k in ("fsr_local_dz", "gsr_local_dz", "fsr_dz", "gsr_dz", *FEATURE_NAMES):
+                v = res["features"].get(k)
+                row[k] = "" if v is None else v
+            rows.append(row)
+
+    for _pc, line in iter_raw_log(log_path):
+        add(tracker.feed_line(line))
+    add(tracker.close())
+    return rows
+
+
+def cmd_features(args) -> int:
+    import csv
+    from server.pipeline.features import FEATURE_NAMES
+    bad = _inside_protected(args.out)
+    if bad:
+        print(f"[거부] 출력 경로가 {bad}/ 안입니다. 이 폴더에는 쓰지 않습니다: {args.out}")
+        return 2
+    rows = []
+    for path in args.paths:
+        log = resolve_log(path)
+        rows += feature_rows(log, os.path.basename(os.path.dirname(os.path.abspath(log))))
+    if not rows:
+        print("시도가 없습니다.")
+        return 1
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
+    with open(args.out, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0]))
+        w.writeheader()
+        w.writerows(rows)
+    print(f"시도 {len(rows)}개 → {os.path.abspath(args.out)}")
+    print("특징별 빈 값(nan) 비율 (전체 시도 / 판정된 시도). 정답과 비교한 값이 아니다:")
+    judged = [r for r in rows if r["quality_ok"]]
+    for k in ("fsr_local_dz", "gsr_local_dz", *FEATURE_NAMES):
+        all_nan = sum(1 for r in rows if r[k] == "") / len(rows)
+        ok_nan = (sum(1 for r in judged if r[k] == "") / len(judged)) if judged else float("nan")
+        print(f"  {k:<22} {all_nan:6.0%} / {ok_nan:6.0%}")
+    return 0
+
+
 def cmd_questions(args) -> int:
     from server.config import DEFAULT_QUESTION_BANK
     from server.questions import QuestionPlanner, load_questions
@@ -277,6 +356,11 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("ports", help="연결된 COM 포트 목록 (포트를 열지 않음)")
     p.set_defaults(func=cmd_ports)
+
+    p = sub.add_parser("features", help="원시 로그의 시도별 전체 특징을 CSV로 쓴다 (data/real 안에는 쓰지 않음)")
+    p.add_argument("paths", nargs="+", help="run 폴더 또는 raw_serial_log.txt (여러 개 가능, 읽기 전용)")
+    p.add_argument("--out", required=True, help="출력 CSV 경로 (data/real, collector 안은 거부)")
+    p.set_defaults(func=cmd_features)
 
     p = sub.add_parser("questions", help="시드별 질문 순서를 미리 본다 (라벨 없음)")
     p.add_argument("--seed", type=int, default=None, help="QUESTION_SEED와 같은 값 (없으면 무작위)")

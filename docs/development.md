@@ -69,7 +69,8 @@ Kitel_LieDetector/
 │  │  └─ serial_source.py ← COM 포트 읽기 전용 (DTR/RTS 끔, 끊기면 재연결)
 │  ├─ pipeline/
 │  │  ├─ tracker.py       ← 세션/기준/시도 추적 (collector Run과 같은 상태 규칙)
-│  │  ├─ features.py      ← 국소 dz
+│  │  ├─ signal.py        ← 인과적 전처리 (중앙값, 저역/대역통과, sosfilt)
+│  │  ├─ features.py      ← 국소 dz(판정용) + 전체 특징(학습용, 7.4절)
 │  │  ├─ quality.py       ← 최소 품질 검사 (보류 코드)
 │  │  └─ bpm.py           ← IR 심박 추정 (화면 표시용, 판정에 안 씀)
 │  └─ judges/
@@ -145,9 +146,10 @@ Python 서버가 `web/dist`를 같이 서빙한다 (같은 포트라 CORS 설정
 .venv\Scripts\python.exe -m server.cli bpm    data\real\experiments\run_20261103_161545
 .venv\Scripts\python.exe -m server.cli ports
 .venv\Scripts\python.exe -m server.cli questions --seed 7 --sessions 2
+.venv\Scripts\python.exe -m server.cli features data\real\experiments\run_20261103_161545 --out C:\temp\features.csv
 ```
 
-`--fsr-th`, `--gsr-th`, `--min-sensors`는 임계값 후보를 비교하는 탐색용이며 `rule.py`의 상수를 바꾸지 않는다.
+`features`는 시도별 전체 특징을 CSV로 쓴다 (출력이 `data/real/`, `collector/` 안이면 거부, 종료 코드 2). `--fsr-th`, `--gsr-th`, `--min-sensors`는 임계값 후보를 비교하는 탐색용이며 `rule.py`의 상수를 바꾸지 않는다.
 
 ### 3.4 테스트
 
@@ -156,7 +158,7 @@ Python 서버가 `web/dist`를 같이 서빙한다 (같은 포트라 CORS 설정
 cd web; npm test
 ```
 
-2026-11-04 기준 pytest 212개, npm test 26개 통과. 실측 로그가 없으면 해당 테스트는 건너뛴다. 서버 테스트는 127.0.0.1의 빈 포트에 임시 uvicorn을 띄우고, 시리얼 테스트는 가짜 시리얼만 써서 실제 COM 포트를 열지 않는다.
+2026-11-04 기준 pytest 235개, npm test 26개 통과. 실측 로그가 없으면 해당 테스트는 건너뛴다. 서버 테스트는 127.0.0.1의 빈 포트에 임시 uvicorn을 띄우고, 시리얼 테스트는 가짜 시리얼만 써서 실제 COM 포트를 열지 않는다.
 
 수집기 테스트는 따로 실행한다 (현재 폴더 기준으로 `experiments/`를 찾으므로 11절 I8 참고):
 
@@ -379,15 +381,36 @@ class Judge(Protocol):
 - 실측 161545: 1초마다 307회 중 값 97회(57.3~80.6 BPM, 중앙값 72.2), 불규칙 73회, 신호를 모으는 중 132회. 시도마다 12초가 다시 모여야 하므로 값은 주로 질문 후반과 답변 구간에 나온다.
 - **판정(RuleJudge)에 쓰지 않는다.** `hr_delta` 같은 심박 특징은 정답 비교와 라벨 데이터가 생긴 뒤 검토한다.
 
-### 7.4 특징 후보 (미구현, M6 전에 검토)
+### 7.4 전체 특징 (S11, 학습용, 판정에 쓰지 않음)
 
-| 특징 | 출처 |
-|---|---|
-| `hr_delta` | IR 피크 기반 (7.3의 추정기, 검증 후) |
-| `ppg_amp_delta` | 필터된 IR 진폭 |
-| `gsr_max_change` | 답변 구간 vs 기준 |
-| `fsr_mean_delta`, `fsr_sd_ratio` | 답변 구간 vs 기준 |
-| 반응 지속시간 | 기획서의 특징값 후보 |
+`server/pipeline/features.py`의 `extended_features(시도 샘플, 기준 측정 샘플)`. RuleJudge에는 기존 4개 특징(국소 dz, 기기 dz)만 넘기고, 전체 특징은 `trial_result.features`와 `feature_info`, `python -m server.cli features` CSV에만 담는다 (판정기 입력을 가로채 테스트로 확인).
+
+**전처리** (`server/pipeline/signal.py`, 인과적): FSR 과거 5샘플 중앙값 + 5Hz 2차 저역통과, GSR 과거 5샘플 중앙값 + 1Hz 2차 저역통과, PPG(IR) 0.5~5Hz 2차 대역통과. `sosfilt`만 쓰고 시작 상태는 첫 샘플 값에 맞춘다(`sosfilt_zi`). `filtfilt`는 쓰지 않는다 (호출 여부를 구문 분석으로 테스트). 샘플링 속도는 기기 시각으로 추정한다. 시도는 READY~RESPONSE를 한 번에, 기준 측정은 따로 필터한다.
+
+**구간**
+
+- 답변(R): 시도의 RESPONSE 샘플. 5초(`MIN_RESPONSE_SEC`) 미만이면 모든 특징 nan.
+- 기준 측정(bl): 그 시도가 쓴 기준 측정 구간(진행 추적기에서 같은 세션, 같은 `baseline_id`로 찾음, `tracker.baseline_for`). 앞 2초(`BASELINE_SKIP_SEC`)를 버리고, 남은 구간이 5초 미만이거나 찾지 못하면 bl 특징은 nan. 기기 요약의 평균/표준편차로 대신하지 않는다 (필터 전 값이라 섞으면 기준이 달라짐). 실측 38개 시도는 모두 찾았다.
+- 질문(q): 같은 시도의 QUESTION 샘플. 50개(1초) 미만이면 q 특징 nan.
+
+**정의** (s = fsr, gsr; ref = bl, q; m, sd = 기준 구간의 평균, 표준편차; sdu = max(sd, 하한 FSR 20 / GSR 5))
+
+| 특징 | 정의 | 단위·범위 |
+|---|---|---|
+| `{s}_mean_delta_{ref}_z` | (답변 평균 − m) / sdu | σ, ±10 클리핑 |
+| `{s}_max_change_{ref}_z` | max\|답변 − m\| / sdu | σ, 0~10 클리핑 |
+| `{s}_sd_ratio_{ref}` | 답변 표준편차 / sdu. 답변 시작의 변화(계단)도 구간 안에 남아 값을 키운다 | 배, 0~10 클리핑 |
+| `{s}_duration_{ref}_s` | 답변 중 \|답변 − m\| / sdu > 2.0인 샘플 수 / fs | 초 |
+| `hr_resp`, `hr_bl`, `hr_q` | `bpm.estimate_bpm`(7.3절) 재사용: 답변 끝 10초(답변 8초 이상일 때), 기준 측정 끝 10초, 질문 끝까지 이어진 12초 | BPM |
+| `hr_delta_bl`, `hr_delta_q` | hr_resp − hr_bl, hr_resp − hr_q | BPM |
+| `ppg_amp_ratio_{ref}` | 답변의 대역통과 IR 표준편차 / 기준의 표준편차 (기준 진폭 20 미만이면 nan) | 배, 0~10 클리핑 |
+
+- 평평한 신호: 기준 표준편차가 0.5(`FLAT_SD`) 미만이면 그 센서·기준의 특징을 nan으로 거부하고 `feature_info.flat`에 적는다.
+- 모든 상수(`BASELINE_SKIP_SEC`, `MIN_BASELINE_SEC`, `MIN_RESPONSE_SEC`, `FLAT_SD`, `Z_CLIP`, `RATIO_CLIP`, `DURATION_Z`, `PPG_AMP_FLOOR`)는 **임시값**이다. 라벨 데이터로 맞추거나 검증하지 않았다.
+- nan-safe(계산할 수 없으면 nan, JSON에서는 null), 결정적(난수 없음), 라벨 비참조(입력은 샘플뿐)를 테스트로 확인한다.
+- 실측 4개 로그(38개 시도, 정답 비교 아님): 판정된 시도 32개에서 센서 특징과 맥파 진폭 비율은 nan 0%. `hr_resp` nan 22%, `hr_bl` 12%, `hr_q` 91%(질문 끝까지 12초가 이어지는 경우가 드묾). 클리핑 경계(10)에 닿은 비율이 높다: `*_max_change_*` 9~14개, `*_mean_delta_bl_z` 9~10개 (기준 측정 기반은 기기 dz처럼 시간 추세의 영향을 받는 것으로 보임). 학습 전에 클리핑과 하한을 다시 정해야 한다.
+- 이 변경 전후로 실측 판정 분포는 같다 (161545: 진실 5, 거짓 2, 보류 4 등, 38개 시도 모두 판정과 `hold_code` 동일).
+- PRD 9절 "공통"의 기준 평균/중앙값/범위 자체는 특징으로 넣지 않았다 (시도 간 변화가 아니라 사람별 수준이라 참가자 분리 검증에서 누수 위험).
 
 학습 시 스케일링, 특징 선택, 하이퍼파라미터 조정은 학습 폴드 안에서만 한다.
 
@@ -443,6 +466,7 @@ class Judge(Protocol):
 | 라벨 독립성 | 라벨 키 거부, 라벨을 바꿔도 특징과 판정이 같음 | `tests/test_judges.py`, `tests/test_features.py` |
 | 판정기, 이유 | 임계값 경계, 보류, 넘은 센서만 언급, 쉬운 보류 문장, 실측 161545 회귀 | `tests/test_judges.py`, `tests/test_reasons.py` |
 | 심박 | 합성 50~150 BPM ±2, 신호 없음/약함/불규칙은 None, 판정 미사용, 실측 범위 | `tests/test_bpm.py` |
+| 전처리, 전체 특징 | 인과성(뒤쪽 샘플을 바꿔도 앞 출력 동일), filtfilt 미사용, 합성 신호로 각 특징 값, 평평/기준 없음/짧은 답변 nan, 클리핑, 결정성, 라벨 비참조, RuleJudge 입력 불변, 실측 nan 비율, CSV 출력 보호 | `tests/test_signal.py`, `tests/test_features_full.py` |
 | 질문 | 은행 라벨 열 무시, 순서·시드, 배정 규칙(질문 전/후 무효), 세션·재부팅, 소진, 실측 161545, 판정 미사용 | `tests/test_questions.py` |
 | 서버 | 임시 uvicorn + websockets: 방송, 새 접속자 재전송, 샘플·심박 전송 간격, 재생 결과, 오류 | `tests/test_app.py`, `tests/test_stream.py` |
 | 웹 | 입력원 문구("실시간" 금지), 판정 화면 모델, 재연결, 세션 표시, 심박 표시 | `web/tests/live.test.mjs` (+ 기존 `core.test.mjs`) |
@@ -486,6 +510,7 @@ class Judge(Protocol):
   - [x] S8 문서 갱신
 - [x] **M2-S9** 게임 모드 질문 문장 표시 (서버가 정한 순서, `QUESTION_SEED`, 라벨 없음, `question_id` 채움) (2026-11-04)
 - [x] **M2-S10** 원시 샘플 품질 검사 연결 (`check_segment` → 보류 `RAW_*` / 경고, 쉬운 문장, 실측 판정 변화 없음) (2026-11-04)
+- [x] **S11** 학습용 전체 특징 추출 (인과적 전처리, 23개 특징, `features` CSV, 판정 미사용, 실측 판정 변화 없음) (2026-11-04) — M6 준비
 - [x] **M3** FastAPI + WebSocket, 웹 연결(보기 전용), 단계 표시, 배지 (2026-11-04, M2의 S4·S5로 진행)
 - [ ] **M4** 펌웨어 소스 확인 후 기기 결과와 서버 판정 일치 방안 결정, I6 결정
 - [ ] **M5** `RuleJudge` (시연 예비안), 임계값 설정 파일 — RuleJudge는 M2-S3에서 구현. 임계값은 코드 상수이며 설정 파일과 라벨 검증은 남음

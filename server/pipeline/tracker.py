@@ -296,3 +296,10 @@ class Tracker:
         s.active = False
         s.end_reason = reason
         out.append(SessionEnded(s.index, s.esp_session, reason))
+
+
+def baseline_for(tracker: "Tracker", trial: TrialSegment) -> Optional[BaselineSegment]:
+    """시도가 쓴 기준 측정 구간 (같은 세션, 같은 baseline_id). 없으면 None. 조회만 한다."""
+    if not 1 <= trial.session_index <= len(tracker.sessions):
+        return None
+    return tracker.sessions[trial.session_index - 1].baselines.get(trial.baseline_id)

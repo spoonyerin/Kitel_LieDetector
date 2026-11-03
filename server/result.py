@@ -7,7 +7,7 @@
 from typing import Optional
 
 from server.judges.rule import RuleJudge
-from server.pipeline.features import json_features, local_features
+from server.pipeline.features import extended_features, json_features, local_features
 from server.pipeline.quality import assess
 from server.reasons import make_reasons, warning_text
 
@@ -32,8 +32,11 @@ def for_web(result: dict) -> dict:
 
 def judge_trial(trial, source: str, judge: RuleJudge = None,
                 session_id: Optional[str] = None, participant_id: Optional[str] = None,
-                question_id: Optional[str] = None) -> dict:
-    """trial: server.pipeline.tracker.TrialSegment."""
+                question_id: Optional[str] = None, baseline_segment=None) -> dict:
+    """trial: server.pipeline.tracker.TrialSegment, baseline_segment: 그 시도가 쓴 BaselineSegment (없으면 None).
+
+    판정기에는 기존 특징(국소 dz와 기기 dz)만 넘긴다. 전체 특징(S11, 학습용)은 결과의 features에만 더한다.
+    """
     if source not in ("dummy", "hardware"):
         raise ValueError("source는 dummy 또는 hardware여야 한다")
     judge = judge or RuleJudge()
@@ -45,6 +48,8 @@ def judge_trial(trial, source: str, judge: RuleJudge = None,
         baseline = {k: summary_values.get(k) for k in ("bl_n", "bl_fsr_mean", "bl_fsr_sd",
                                                       "bl_gsr_mean", "bl_gsr_sd", "bl_ir_mean")}
     verdict = judge.judge(feat.features, baseline, quality.as_dict())
+    ext_values, ext_info = extended_features(
+        trial.samples, baseline_segment.samples if baseline_segment is not None else None)
     reasons = make_reasons(verdict, judge)
     shown_warnings, server_warnings = split_warnings(quality.warnings)
     return {
@@ -65,7 +70,9 @@ def judge_trial(trial, source: str, judge: RuleJudge = None,
                     "warning_texts": list(dict.fromkeys(warning_text(w) for w in shown_warnings)),
                     "raw_check": quality.raw},
         "server_only": {"warnings": server_warnings},   # 웹으로 보내지 않는다 (for_web)
-        "features": json_features(feat.features),
+        # 판정에 쓴 특징 + 학습용 전체 특징 (전체 특징은 판정에 쓰지 않는다)
+        "features": {**json_features(feat.features), **json_features(ext_values)},
+        "feature_info": ext_info,
         "contributions": [
             {"sensor": c.sensor, "feature": c.feature, "value": c.value, "contribution": c.contribution,
              "direction": "up" if c.value > 0 else "down",
