@@ -12,6 +12,9 @@
 | DUMMY_SPEED       | 1.0                                            | 더미 배속 |
 | JUDGE             | rule                                           | 판정기 (현재 rule만) |
 | HISTORY_LIMIT     | 200                                            | 새 접속자에게 다시 보낼 시도 결과 최대 개수 |
+| SAMPLE_BATCH_SEC  | 0.25                                           | 그래프 샘플 묶음 간격 (0.2~0.5초) |
+| SAMPLE_DECIMATE   | 2                                              | 샘플 N개 중 1개만 보냄 (2 → 25Hz) |
+| SAMPLE_MAX_PER_BATCH | 100                                         | 한 묶음 최대 샘플 수 (넘으면 오래된 것부터 버림) |
 """
 
 import os
@@ -38,8 +41,15 @@ class Settings:
     dummy_speed: float = 1.0
     judge: str = "rule"
     history_limit: int = 200
+    sample_batch_sec: float = 0.25
+    sample_decimate: int = 2
+    sample_max_per_batch: int = 100
 
     def __post_init__(self):
+        if not 0.2 <= self.sample_batch_sec <= 0.5:
+            raise ValueError(f"SAMPLE_BATCH_SEC는 0.2~0.5초여야 합니다: {self.sample_batch_sec}")
+        if self.sample_decimate < 1 or self.sample_max_per_batch < 1:
+            raise ValueError("SAMPLE_DECIMATE와 SAMPLE_MAX_PER_BATCH는 1 이상이어야 합니다")
         if self.source == "serial":
             raise ValueError("SOURCE=serial은 아직 없습니다 (S5b에서 추가). dummy 또는 replay를 쓰세요.")
         if self.source not in SOURCES:
@@ -78,4 +88,7 @@ def load_settings(env=None) -> Settings:
         dummy_speed=_get(env, "DUMMY_SPEED", 1.0, float),
         judge=_get(env, "JUDGE", "rule").lower(),
         history_limit=_get(env, "HISTORY_LIMIT", 200, int),
+        sample_batch_sec=_get(env, "SAMPLE_BATCH_SEC", 0.25, float),
+        sample_decimate=_get(env, "SAMPLE_DECIMATE", 2, int),
+        sample_max_per_batch=_get(env, "SAMPLE_MAX_PER_BATCH", 100, int),
     )

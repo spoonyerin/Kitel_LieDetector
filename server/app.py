@@ -7,19 +7,25 @@
 흐름: 입력원(별도 스레드) → Tracker → judge_trial → 메시지 → /ws 접속자 전원에게 방송
 - 서버와 웹은 보기 전용이다. 웹에서 오는 메시지로 기기나 입력원을 제어하지 않는다.
 - 재생 입력원은 data/real을 읽기만 한다. 서버는 파일을 쓰지 않는다.
-- 새 접속자에게는 현재 입력원 상태, 마지막 오류, 마지막 단계, 지금까지의 시도 결과를 먼저 보낸다
+- 새 접속자에게는 현재 입력원 상태, 마지막 오류, 기준 측정, 마지막 단계, 최근 샘플,
+  지금까지의 시도 결과를 먼저 보낸다
   (새로고침해도 화면이 비지 않게).
 
 서버 → 웹 메시지 (docs/development.md 5.3절):
     device_status  입력원 이름과 종류(재생/합성/실시간), 연결 여부, 끝났는지
     phase_update   기기 단계 변화 또는 단계 안의 사건(손 접촉, 세션 시작/종료, 재부팅)
+    sample_batch   그래프용 원시 샘플 묶음 (server/stream.py: 솎기, 0.2~0.5초 간격, 최대 개수 제한)
+    baseline_result 기준 측정 결과 (평균, 표준편차, 상태, 하한 적용 여부)
     trial_result   server.result.judge_trial의 결과 그대로 (judge_note, disclaimer 포함)
     error          입력원 오류 (retryable, message)
 """
 
 import asyncio
 import json
+import logging
+import mimetypes
 import threading
+from collections import deque
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -28,11 +34,19 @@ from fastapi.staticfiles import StaticFiles
 
 from server.config import WEB_DIST, Settings, load_settings
 from server.judges.rule import RuleJudge
-from server.pipeline.tracker import (DeviceRebooted, Notice, PhaseChanged, SessionEnded,
+from server.pipeline.tracker import (BaselineDone, DeviceRebooted, Notice, PhaseChanged, SessionEnded,
                                      SessionStarted, Tracker, TrialDone)
-from server.result import judge_trial
+from server.result import for_web, judge_trial
 from server.source.dummy_source import DummyConfig, DummySource
+from server.source.lines import Sample
 from server.source.replay_source import ReplaySource
+from server.stream import SampleBatcher, baseline_message
+
+# Windows 레지스트리에 따라 .mjs가 JavaScript로 인식되지 않을 수 있어 직접 지정한다 (모듈 스크립트 필수).
+mimetypes.add_type("text/javascript", ".mjs")
+
+SAMPLE_HISTORY_BATCHES = 80   # 새 접속자에게 다시 보낼 최근 샘플 묶음 수 (0.25초 간격이면 약 20초)
+logger = logging.getLogger("truthpulse")
 
 # 입력원 종류별 화면 표시용 정보
 INPUT_INFO = {
@@ -81,8 +95,27 @@ def update_to_message(u, source_label: str, judge) -> Optional[dict]:
     if isinstance(u, DeviceRebooted):
         return _event_msg("DEVICE_REBOOT", u.text)
     if isinstance(u, TrialDone):
-        return judge_trial(u.segment, source_label, judge)
+        res = judge_trial(u.segment, source_label, judge)
+        hidden = res.get("server_only", {}).get("warnings")
+        if hidden:  # 화면에는 보이지 않는 경고: 서버 로그에만 남긴다
+            logger.warning("서버 전용 경고 %s T%02d: %s", res["session_id"], res["trial_id"], ", ".join(hidden))
+        return for_web(res)
+    if isinstance(u, BaselineDone):
+        return baseline_message(u.segment, source_label)
     return None
+
+
+def with_session(msg: dict, tracker: Tracker) -> dict:
+    """단계 메시지에 추적기의 현재 세션 번호를 붙인다.
+
+    기기는 세션 시작 전과 끝난 뒤의 PLACE_HAND 단계를 세션 번호 0으로 보낸다. 화면에는 기기 번호 대신
+    추적기의 세션 순번(trial_result의 session_id S01, S02와 같은 번호)을 보여 준다.
+    """
+    if msg.get("type") == "phase_update":
+        s = tracker.sess
+        msg["session_index"] = s.index if s else None
+        msg["session_active"] = bool(s and s.active)
+    return msg
 
 
 def run_pipeline(settings: Settings, emit, stop: threading.Event) -> None:
@@ -92,18 +125,30 @@ def run_pipeline(settings: Settings, emit, stop: threading.Event) -> None:
         source = make_source(settings, sleep=stop.wait)
         judge = RuleJudge()
         tracker = Tracker(source.source)
+        batcher = SampleBatcher(source.source, batch_sec=settings.sample_batch_sec,
+                                decimate=settings.sample_decimate, max_samples=settings.sample_max_per_batch)
         emit(device_status(settings, source.source, connected=True))
 
         def handle(updates):
             for u in updates:
                 msg = update_to_message(u, source.source, judge)
                 if msg is not None:
-                    emit(msg)
+                    emit(with_session(msg, tracker))
 
         for line in source.lines():
             if stop.is_set():
                 return
-            handle(tracker.feed_line(line))
+            item = tracker.parser.feed(line)   # 추적기와 같은 해석기를 쓴다
+            if item is None:
+                continue
+            if isinstance(item, Sample):
+                batch = batcher.add(item)
+                if batch:
+                    emit(batch)
+            handle(tracker.feed(item))
+        last = batcher.flush()
+        if last:
+            emit(last)
         handle(tracker.close())
         emit(device_status(settings, source.source, connected=False, finished=True))
     except Exception as e:  # 입력원 오류는 화면에 알리고 스레드를 끝낸다
@@ -129,6 +174,8 @@ class Hub:
         self.status = None         # 마지막 device_status
         self.phase = None          # 마지막 단계 phase_update (event가 아닌 것)
         self.error = None          # 마지막 error (입력원이 실패한 뒤 접속해도 이유를 볼 수 있게)
+        self.baseline = None       # 마지막 baseline_result
+        self.samples = deque(maxlen=SAMPLE_HISTORY_BATCHES)   # 최근 sample_batch (그래프가 비지 않게)
         self.history_limit = history_limit
         self.lock = asyncio.Lock()
 
@@ -143,6 +190,10 @@ class Hub:
             del self.history[:-self.history_limit]
         elif t == "error":
             self.error = msg
+        elif t == "baseline_result":
+            self.baseline = msg
+        elif t == "sample_batch":
+            self.samples.append(msg)
 
     async def publish(self, msg: dict):
         async with self.lock:
@@ -155,9 +206,10 @@ class Hub:
                     self.clients.discard(ws)
 
     async def join(self, ws: WebSocket):
-        """새 접속자에게 상태, 마지막 오류, 마지막 단계, 지금까지의 시도 결과를 보낸 뒤 방송 대상에 넣는다."""
+        """새 접속자에게 상태, 마지막 오류, 기준 측정, 마지막 단계, 최근 샘플, 지금까지의 시도 결과를
+        보낸 뒤 방송 대상에 넣는다."""
         async with self.lock:
-            for msg in [self.status, self.error, self.phase, *self.history]:
+            for msg in [self.status, self.error, self.baseline, self.phase, *self.samples, *self.history]:
                 if msg is not None:
                     await ws.send_text(dumps(msg))
             self.clients.add(ws)

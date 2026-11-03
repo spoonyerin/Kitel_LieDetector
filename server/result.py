@@ -13,6 +13,22 @@ from server.reasons import make_reasons
 
 DISCLAIMER = "오락용 게임입니다. 이유는 통계적 설명이며 거짓의 증명이 아닙니다."
 
+# 화면에 보이지 않고 서버 쪽(로그, 명령줄, 이후 저장 기록)에만 남기는 경고.
+# UNKNOWN_WARN_BITS는 펌웨어 확인 전이라 뜻을 모르는 경고 비트다 (예: 64).
+SERVER_ONLY_WARNING_PREFIXES = ("UNKNOWN_WARN_BITS",)
+
+
+def split_warnings(warnings):
+    """(화면에 보일 경고, 서버에만 남길 경고)로 나눈다."""
+    shown = [w for w in warnings if not w.startswith(SERVER_ONLY_WARNING_PREFIXES)]
+    hidden = [w for w in warnings if w.startswith(SERVER_ONLY_WARNING_PREFIXES)]
+    return shown, hidden
+
+
+def for_web(result: dict) -> dict:
+    """웹으로 보낼 때 서버 전용 항목(server_only)을 뺀다."""
+    return {k: v for k, v in result.items() if k != "server_only"}
+
 
 def judge_trial(trial, source: str, judge: RuleJudge = None,
                 session_id: Optional[str] = None, participant_id: Optional[str] = None,
@@ -30,6 +46,7 @@ def judge_trial(trial, source: str, judge: RuleJudge = None,
                                                       "bl_gsr_mean", "bl_gsr_sd", "bl_ir_mean")}
     verdict = judge.judge(feat.features, baseline, quality.as_dict())
     reasons = make_reasons(verdict, judge)
+    shown_warnings, server_warnings = split_warnings(quality.warnings)
     return {
         "type": "trial_result",
         "source": source,
@@ -43,7 +60,8 @@ def judge_trial(trial, source: str, judge: RuleJudge = None,
         "score": verdict.score,
         "judge": {"name": verdict.judge_name, "version": verdict.judge_version, "trained": verdict.trained},
         "judge_note": judge.note,
-        "quality": {"ok": quality.ok, "flags": quality.flags, "warnings": quality.warnings},
+        "quality": {"ok": quality.ok, "flags": quality.flags, "warnings": shown_warnings},
+        "server_only": {"warnings": server_warnings},   # 웹으로 보내지 않는다 (for_web)
         "features": json_features(feat.features),
         "contributions": [
             {"sensor": c.sensor, "feature": c.feature, "value": c.value, "contribution": c.contribution,

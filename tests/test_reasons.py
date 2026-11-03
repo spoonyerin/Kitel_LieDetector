@@ -44,19 +44,31 @@ def test_no_sensor_exceeded():
     assert _reasons(1.0, -2.9) == ["임계값(FSR 3.0σ, GSR 3.0σ)을 넘은 센서가 없습니다."]
 
 
-@pytest.mark.parametrize("code,needle", [
-    ("DEVICE_INVALID:HAND_OFF_LONG", "손이 센서에서 오래 떨어져"),
-    ("DEVICE_INVALID:HAND_LIFTED", "답변 중 손이 센서에서 떨어져"),
-    ("DEVICE_INVALID:WEIRD", "사유: WEIRD"),
-    ("NO_SUMMARY", "기기 요약을 받지 못해"),
-    ("Q_TOO_SHORT:12", "12샘플, 최소 50샘플"),
-    ("CONTACT_EVENT:CONTACT_SHIFT", "손 접촉이 바뀌어(CONTACT_SHIFT)"),
-    ("FEATURE_NAN", "특징값을 계산하지 못해"),
-    ("THRESHOLD_UNSET", "임계값이 정해지지 않아"),
-    ("SOMETHING", "SOMETHING"),
+@pytest.mark.parametrize("code,expected", [
+    ("CONTACT_EVENT:CONTACT_SHIFT", "손 위치가 바뀌어 이 답변은 측정에서 제외했어요."),
+    ("CONTACT_EVENT:CONTACT_DIP", "손가락이 센서에서 살짝 떨어져 이 답변은 측정에서 제외했어요."),
+    ("CONTACT_EVENT:HAND_LOST", "손이 센서에서 떨어져 이 답변은 측정에서 제외했어요."),
+    ("CONTACT_EVENT:BASELINE_LOST", "기준 측정이 흐트러져 이 답변은 측정에서 제외했어요."),
+    ("DEVICE_INVALID:HAND_OFF_LONG", "손이 센서에서 오래 떨어져 있어서 이 답변은 측정에서 제외했어요."),
+    ("DEVICE_INVALID:HAND_LIFTED", "답변 중에 손을 떼서 이 답변은 측정에서 제외했어요."),
+    ("DEVICE_INVALID:WEIRD", "기기가 이 답변을 무효로 처리해서 이 답변은 측정에서 제외했어요."),
+    ("NO_SUMMARY", "기기에서 측정 결과를 받지 못해서 이 답변은 판정하지 않았어요."),
+    ("Q_TOO_SHORT:12", "질문 시간이 1초보다 짧아 비교할 기준이 없어서 이 답변은 판정하지 않았어요."),
+    ("FEATURE_NAN", "신호 값을 계산하지 못해서 이 답변은 판정하지 않았어요."),
+    ("THRESHOLD_UNSET", "판정 기준이 아직 정해지지 않아서 이 답변은 판정하지 않았어요."),
+    ("SOMETHING", "신호 상태가 좋지 않아서 이 답변은 판정하지 않았어요."),
 ])
-def test_hold_texts(code, needle):
-    assert needle in hold_text(code)
+def test_hold_texts_are_plain(code, expected):
+    assert hold_text(code) == expected
+
+
+def test_hold_texts_hide_codes():
+    """쉬운 말: 화면 문장에 영문 코드나 샘플 수, σ가 들어가지 않는다 (코드는 hold_code에 따로 남는다)."""
+    import re
+    for code in ("CONTACT_EVENT:CONTACT_SHIFT", "DEVICE_INVALID:HAND_OFF_LONG", "DEVICE_INVALID:WEIRD",
+                 "Q_TOO_SHORT:12", "NO_SUMMARY", "SOMETHING"):
+        text = hold_text(code)
+        assert not re.search(r"[A-Z]{3,}|σ|샘플", text), text
 
 
 def test_hold_reason_sentence_from_verdict():
@@ -114,3 +126,15 @@ def test_real_161545_decisions():
     for r in results:
         json.dumps(r, allow_nan=False)
         assert r["source"] == "hardware" and r["score"] is None
+    # 뜻을 모르는 경고 비트(64)는 화면용 warnings에서 빠지고 server_only에만 남는다
+    t5 = next(r for r in results if (r["session_id"], r["trial_id"]) == ("S01", 5))
+    assert t5["server_only"]["warnings"] == ["UNKNOWN_WARN_BITS=64"]
+    assert not any(w.startswith("UNKNOWN_WARN_BITS") for r in results for w in r["quality"]["warnings"])
+    assert t5["hold_reason"] == "손 위치가 바뀌어 이 답변은 측정에서 제외했어요."
+
+
+def test_for_web_strips_server_only():
+    from server.result import for_web, split_warnings
+    assert split_warnings(["UNKNOWN_WARN_BITS=64", "DEVICE_WARN=CONTACT_DIP"]) == \
+        (["DEVICE_WARN=CONTACT_DIP"], ["UNKNOWN_WARN_BITS=64"])
+    assert for_web({"type": "trial_result", "server_only": {"warnings": ["x"]}}) == {"type": "trial_result"}

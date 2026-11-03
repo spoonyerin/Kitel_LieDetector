@@ -11,36 +11,43 @@ from server.pipeline.features import MIN_QUESTION_SAMPLES
 # 센서 이름과 붙는 조사
 SENSOR_KR = {"gsr": ("피부전도(GSR)", "가"), "fsr": ("손가락 압력(FSR)", "이"), "ppg": ("맥파(PPG)", "가")}
 
+# 보류 사유는 참가자가 바로 알아듣는 쉬운 말로 쓴다. 코드(hold_code)는 결과에 따로 남는다.
+EXCLUDED = "이 답변은 측정에서 제외했어요."
+NOT_JUDGED = "이 답변은 판정하지 않았어요."
+CONTACT_KR = {
+    "CONTACT_SHIFT": "손 위치가 바뀌어",
+    "CONTACT_DIP": "손가락이 센서에서 살짝 떨어져",
+    "HAND_LOST": "손이 센서에서 떨어져",
+    "BASELINE_LOST": "기준 측정이 흐트러져",
+}
 DEVICE_REASON_KR = {
-    "HAND_OFF_LONG": "손이 센서에서 오래 떨어져",
-    "HAND_LIFTED": "답변 중 손이 센서에서 떨어져",
+    "HAND_OFF_LONG": "손이 센서에서 오래 떨어져 있어서",
+    "HAND_LIFTED": "답변 중에 손을 떼서",
 }
 
 
 def hold_text(code: str) -> str:
-    """보류 사유 코드를 한국어 문장으로 바꾼다."""
+    """보류 사유 코드를 쉬운 한국어 문장으로 바꾼다."""
     kind, _, arg = (code or "").partition(":")
+    if kind == "CONTACT_EVENT":
+        return f"{CONTACT_KR.get(arg, '손 접촉이 바뀌어')} {EXCLUDED}"
     if kind == "DEVICE_INVALID":
         why = DEVICE_REASON_KR.get(arg)
-        if why:
-            return f"{why} 기기가 이 시도를 무효로 처리했습니다. 판정을 보류합니다."
-        return f"기기가 이 시도를 무효로 처리했습니다 (사유: {arg}). 판정을 보류합니다."
+        return f"{why} {EXCLUDED}" if why else f"기기가 이 답변을 무효로 처리해서 {EXCLUDED}"
     if kind == "NO_SUMMARY":
-        return "기기 요약을 받지 못해 판정을 보류합니다."
+        return f"기기에서 측정 결과를 받지 못해서 {NOT_JUDGED}"
     if kind == "Q_TOO_SHORT":
-        return (f"질문 구간이 너무 짧아({arg}샘플, 최소 {MIN_QUESTION_SAMPLES}샘플) "
-                "비교 기준을 만들 수 없습니다. 판정을 보류합니다.")
+        seconds = MIN_QUESTION_SAMPLES / 50
+        return f"질문 시간이 {seconds:g}초보다 짧아 비교할 기준이 없어서 {NOT_JUDGED}"
     if kind == "NO_RESPONSE":
-        return "답변 구간 신호가 없어 판정을 보류합니다."
+        return f"답변하는 동안의 신호가 없어서 {NOT_JUDGED}"
     if kind == "BL_SD_MISSING":
-        return "기준 측정 값을 받지 못해 판정을 보류합니다."
-    if kind == "CONTACT_EVENT":
-        return f"질문이나 답변 중에 손 접촉이 바뀌어({arg}) 판정을 보류합니다."
+        return f"기준 측정 값이 없어서 {NOT_JUDGED}"
     if kind == "FEATURE_NAN":
-        return "특징값을 계산하지 못해 판정을 보류합니다."
+        return f"신호 값을 계산하지 못해서 {NOT_JUDGED}"
     if kind == "THRESHOLD_UNSET":
-        return "판정 임계값이 정해지지 않아 판정을 보류합니다."
-    return f"신호 품질 문제로 판정을 보류합니다 ({code})."
+        return f"판정 기준이 아직 정해지지 않아서 {NOT_JUDGED}"
+    return f"신호 상태가 좋지 않아서 {NOT_JUDGED}"
 
 
 def contribution_text(c, threshold: float) -> str:

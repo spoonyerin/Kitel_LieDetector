@@ -160,8 +160,13 @@ def test_new_client_gets_history():
         live = _collect(port, lambda m: _finished(m) and len(_results(m)) == 3)
         late = _collect(port, lambda m: len(_results(m)) == 3, timeout=5)
     assert late[0]["type"] == "device_status" and late[0]["finished"] is True
-    assert late[1]["type"] == "phase_update" and late[1]["phase"]
+    kinds = [m["type"] for m in late]
+    # 상태 → 기준 측정 → 마지막 단계 → 최근 샘플 → 시도 결과 순서
+    assert kinds[1:3] == ["baseline_result", "phase_update"] and late[2]["phase"]
+    first_result = kinds.index("trial_result")
+    assert "sample_batch" in kinds[3:first_result]
     assert _results(late) == _results(live)
+    assert late[1] == [m for m in live if m["type"] == "baseline_result"][-1]
 
 
 def test_clients_send_messages_are_ignored():
@@ -171,6 +176,41 @@ def test_clients_send_messages_are_ignored():
             ws.send(json.dumps({"type": "set_mode", "mode": "serial"}))
             got = [json.loads(ws.recv(timeout=5)) for _ in range(2)]
             assert got[0]["type"] == "device_status"
+
+
+def test_mjs_served_as_javascript():
+    """모듈 스크립트는 JavaScript MIME으로 서빙돼야 브라우저가 실행한다."""
+    with running_server(_dummy(speed=0)) as port:
+        for name in ("app.mjs", "live.mjs"):
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/{name}", timeout=5) as r:
+                assert "javascript" in r.headers.get("content-type", "")
+
+
+def test_sample_batches_and_baseline_live():
+    """20배속 더미: 그래프 샘플이 묶음으로 오고(과하지 않게), 기준 측정 결과가 온다."""
+    settings = _dummy(speed=20, trials=2, patterns=("calm", "reactive"))
+    t0 = time.time()
+    with running_server(settings) as port:
+        msgs = _collect(port, lambda m: _finished(m) and len(_results(m)) == 2)
+    elapsed = time.time() - t0
+    batches = [m for m in msgs if m["type"] == "sample_batch"]
+    assert batches, "sample_batch가 오지 않았다"
+    # 0.25초 간격 제한: 실제 경과 시간에 비해 묶음 수가 과하지 않다 (여유 2배 + 마지막 묶음)
+    assert len(batches) <= elapsed / 0.25 * 2 + 2
+    assert all(b["n"] <= settings.sample_max_per_batch for b in batches)
+    assert all(b["decimate"] == 2 and b["source"] == "dummy" for b in batches)
+    for b in batches:
+        ts = b["time_ms"]
+        assert ts == sorted(ts) and all(len(b[k]) == len(ts) for k in ("fsr", "gsr", "ir", "phase", "contact"))
+    baselines = [m for m in msgs if m["type"] == "baseline_result"]
+    assert baselines and baselines[-1]["status"] == "COMPLETE" and baselines[-1]["fsr"]["mean"] is not None
+
+
+def test_sample_settings_from_env():
+    s = load_settings({"SAMPLE_BATCH_SEC": "0.5", "SAMPLE_DECIMATE": "5", "SAMPLE_MAX_PER_BATCH": "40"})
+    assert (s.sample_batch_sec, s.sample_decimate, s.sample_max_per_batch) == (0.5, 5, 40)
+    with pytest.raises(ValueError):
+        load_settings({"SAMPLE_BATCH_SEC": "0.05"})
 
 
 # ---------- 재생 ----------
@@ -187,6 +227,18 @@ def test_replay_real_log():
     counts = {d: sum(1 for r in results if r["decision"] == d) for d in ("truth", "lie", "inconclusive")}
     assert counts == {"truth": 5, "lie": 2, "inconclusive": 4}   # S3 CLI 결과와 같아야 한다
     assert all(r["source"] == "hardware" for r in results)
+    # 서버 전용 경고는 웹으로 보내지 않는다
+    assert all("server_only" not in r for r in results)
+    assert not any(w.startswith("UNKNOWN_WARN_BITS") for r in results for w in r["quality"]["warnings"])
+    # 단계 메시지에 추적기의 세션 순번이 붙는다 (기기의 세션 0 단계에도)
+    phases = [m for m in msgs if m["type"] == "phase_update"]
+    assert all("session_index" in m and "session_active" in m for m in phases)
+    assert {m["session_index"] for m in phases if m["session_index"]} == {1, 2}
+    place_after_end = [m for m in phases if m.get("phase") == "PLACE_HAND" and m["esp_session"] == 0
+                       and m["session_index"] == 1]
+    assert place_after_end and all(m["session_active"] is False for m in place_after_end)
+    held = [r for r in results if r["decision"] == "inconclusive"]
+    assert "손 위치가 바뀌어 이 답변은 측정에서 제외했어요." in [r["hold_reason"] for r in held]
 
 
 def test_bad_replay_path_reports_error(tmp_path):

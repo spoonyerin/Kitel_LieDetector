@@ -137,6 +137,9 @@ def _print_result(res, as_json):
         print(f"         - {r}")
     if res["quality"]["warnings"]:
         print(f"         (경고: {', '.join(res['quality']['warnings'])})")
+    hidden = res.get("server_only", {}).get("warnings")
+    if hidden:
+        print(f"         (서버 전용 경고, 화면에는 숨김: {', '.join(hidden)})")
 
 
 def _run(source, brief, judge=None, as_json=False) -> int:
