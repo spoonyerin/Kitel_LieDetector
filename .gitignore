@@ -12,3 +12,8 @@ __pycache__/
 *.pyc
 node_modules/
 .env
+
+# 도구 캐시, 편집기 설정
+.pytest_cache/
+.vscode/
+*.egg-info/
