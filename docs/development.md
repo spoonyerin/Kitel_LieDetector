@@ -16,6 +16,7 @@ Claude Code는 작업 시작 전에 이 문서를 읽는다. 제품 요구사항
 | `INTEGRATION.md` | 웹과 장치 연동 계약 제안 (기존 웹 프로토타입 문서) | 통신 코드를 만질 때 |
 | `collector/record_session.py` 상단 설명 | 수집기 사용법과 저장 구조 | 수집기를 만질 때 |
 | `server/config.py` 상단 표 | 서버 환경 변수 전체 목록과 기본값 | 서버를 실행하거나 설정을 바꿀 때 |
+| `docs/COLLECTION_GUIDE.md` | 진행자용 데이터 수집 가이드 (수집기 실행, 동의, 세션 진행, 라벨 확정, 동의서 양식) | 실측 데이터를 모을 때 |
 
 ## 1. 작업 규칙 (반드시 지킬 것)
 
@@ -43,7 +44,8 @@ Kitel_LieDetector/
 ├─ requirements.txt       ← pip freeze 결과 (버전 고정)
 ├─ docs/
 │  ├─ PRD.md
-│  └─ development.md
+│  ├─ development.md
+│  └─ COLLECTION_GUIDE.md ← 진행자용 수집 가이드 (S15)
 ├─ collector/             ← LieDetector에서 가져온 수집, 분석 코드 (구조 변경 금지, 서버는 import만 함)
 │  ├─ record_session.py   ← 수집기. COM 포트로 기기 출력을 읽고 CSV로 저장
 │  ├─ extract_features.py
@@ -55,8 +57,10 @@ Kitel_LieDetector/
 ├─ firmware/              ← ESP32 펌웨어 (KITEL_MAIN_V5, 소스 추가 필요)
 ├─ server/                ← Python 서버 (M2에서 구현)
 │  ├─ app.py              ← FastAPI, /ws 방송, web/dist 정적 서빙, 입력원 스레드
+│  ├─ storage.py          ← 서버 기록 저장 (SAVE=1일 때만, data/server/, S16)
 │  ├─ config.py           ← 환경 변수 설정 (상단에 전체 표)
-│  ├─ cli.py              ← 명령줄 도구: parse, replay, dummy, bpm, ports (모두 읽기 전용)
+│  ├─ cli.py              ← 명령줄 도구: parse, replay, dummy, bpm, ports, doctor (모두 읽기 전용)
+│  ├─ doctor.py           ← 발표 전 점검 (S18, 표준 라이브러리만으로 시작)
 │  ├─ result.py           ← 시도 하나 판정 → trial_result (PRD 9절 형식)
 │  ├─ reasons.py          ← 기여도/보류 코드 → 쉬운 한국어 문장
 │  ├─ stream.py           ← sample_batch(그래프 샘플 묶음), baseline_result
@@ -85,6 +89,8 @@ Kitel_LieDetector/
 │  ├─ tests/              ← core.test.mjs, live.test.mjs (npm test)
 │  ├─ package.json
 │  └─ server.mjs          ← 예전 웹 단독 개발용 서버 (아래 참고)
+├─ scripts/
+│  └─ start_demo.ps1      ← 발표용 서버 실행 (S18, 3.6절)
 ├─ training/              ← 학습 파이프라인 (S12, 7.5절)
 │  ├─ build_dataset.py    ← collector 기록 → 시도별 특징 + 확정 라벨 (서버 코드 재사용)
 │  ├─ train_logreg.py     ← 참가자 분리 검증, 기준 모델 비교, model.json 내보내기
@@ -98,10 +104,11 @@ Kitel_LieDetector/
 │                            test_rule_config, test_evaluation, test_bpm_check)
 └─ data/                  ← 깃에 올리지 않음
    ├─ real/               ← 실측 (읽기 전용). 수집기 기록이 여기 있다
-   └─ dummy/              ← 더미 (현재 서버는 아무것도 저장하지 않으므로 쓰지 않는다)
+   ├─ dummy/              ← 더미 전용 (서버는 여기에 쓰지 않는다. 더미 입력원 기록도 data/server/에 표시해 저장)
+   └─ server/             ← 서버 기록 (SAVE=1, <날짜시각>_<입력원>/, S16)
 ```
 
-아직 없는 것: `server/storage.py`(기록 저장, I6). 실제 `model.json`(라벨 확정 데이터가 모이면 S12 파이프라인으로 만든다), `server/judges/dummy.py`(RuleJudge를 먼저 만들어 필요 없어짐, 6절).
+아직 없는 것: 실제 `model.json`(라벨 확정 데이터가 모이면 S12 파이프라인으로 만든다), `server/judges/dummy.py`(RuleJudge를 먼저 만들어 필요 없어짐, 6절).
 
 `web/server.mjs`는 예전 웹 프로토타입을 혼자 띄우던 개발용 정적 서버다(`npm run dev`, 포트 4173, 가상 신호만 사용). `/ws`가 없으므로 웹은 기존 데모 모드로 동작한다. 기기 연동은 Python 서버(`server/app.py`)가 `web/dist`를 같은 포트로 서빙할 때만 동작한다.
 
@@ -134,7 +141,7 @@ Python 서버가 `web/dist`를 같이 서빙한다 (같은 포트라 CORS 설정
 - 환경 변수 전체 목록과 기본값은 `server/config.py` 상단 표에 있다. 주요 값: `REPLAY_MAX_WAIT`(세션 사이 공백 단축, 기본 2초), `DUMMY_TRIALS`, `DUMMY_PATTERNS`(calm, reactive, poor), `SERIAL_BAUD`(기본 115200, `collector/record_session.py`의 `--baud` 기본값), `SERIAL_RETRY_SEC`(1~2초), `SERIAL_IDLE_SEC`(기본 5초), `SAMPLE_BATCH_SEC`(0.2~0.5초), `BPM_INTERVAL_SEC`(0.5~1초), `QUESTION_SEED`(질문 순서 시드, 없으면 서버 시작마다 무작위이며 서버 콘솔에 찍힌다), `QUESTION_BANK`(기본 `collector/question_bank.csv`), `JUDGE`(rule 또는 logreg, 기본 rule), `MODEL_PATH`(기본 `training/out/model.json`), `ALLOW_EXPLORATORY_MODEL`(1이면 탐색용 모델도 로드), `RULE_CONFIG`(규칙 판정기 임계값 JSON, 없으면 코드 상수 3.0/3.0/1).
 - PowerShell의 `$env:` 값은 그 창을 닫을 때까지 남는다. 다른 입력원으로 바꿀 때는 값을 다시 지정하거나 `Remove-Item Env:SOURCE`로 지운다.
 - 재생과 더미는 화면에 "실시간"으로 표시하지 않는다. serial은 기기 줄을 실제로 받는 동안만 `live=true`("실시간 기기")다.
-- 서버는 파일을 쓰지 않는다. `data/dummy/`도 만들지 않는다 (기록 저장은 미구현, I6).
+- 서버는 기본으로 파일을 쓰지 않는다. `$env:SAVE="1"`일 때만 `data/server/<날짜시각>_<입력원>/`에 기록을 쓴다 (5.4절). `data/real/`, `data/dummy/`에는 쓰지 않는다.
 
 ### 3.2 시리얼(기기) 사용 시 주의
 
@@ -153,6 +160,7 @@ Python 서버가 `web/dist`를 같이 서빙한다 (같은 포트라 CORS 설정
 .venv\Scripts\python.exe -m server.cli dummy  --trials 4 --patterns calm,reactive,poor,calm --speed 0 --judge
 .venv\Scripts\python.exe -m server.cli bpm    data\real\experiments\run_20261103_161545
 .venv\Scripts\python.exe -m server.cli ports
+.venv\Scripts\python.exe -m server.cli doctor                   (발표 전 점검, 3.6절)
 .venv\Scripts\python.exe -m server.cli questions --seed 7 --sessions 2
 .venv\Scripts\python.exe -m server.cli features data\real\experiments\run_20261103_161545 --out C:\temp\features.csv
 .venv\Scripts\python.exe -m training.build_dataset                (data/real → training/out/dataset.csv)
@@ -172,7 +180,7 @@ Python 서버가 `web/dist`를 같이 서빙한다 (같은 포트라 CORS 설정
 cd web; npm test
 ```
 
-2026-11-04 기준 pytest 319개, npm test 30개 통과. 실측 로그가 없으면 해당 테스트는 건너뛴다. 서버 테스트는 127.0.0.1의 빈 포트에 임시 uvicorn을 띄우고, 시리얼 테스트는 가짜 시리얼만 써서 실제 COM 포트를 열지 않는다.
+2026-11-04 기준 pytest 377개 통과(선택 검사 1개 건너뜀: PowerShell 구문 분석, `TRUTHPULSE_PS_PARSE=1`일 때만), npm test 36개 통과. 실측 로그가 없으면 해당 테스트는 건너뛴다. 서버 테스트는 127.0.0.1의 빈 포트에 임시 uvicorn을 띄우고, 시리얼 테스트는 가짜 시리얼만 써서 실제 COM 포트를 열지 않는다.
 
 수집기 테스트는 따로 실행한다 (현재 폴더 기준으로 `experiments/`를 찾으므로 11절 I8 참고):
 
@@ -188,6 +196,55 @@ cd web; npm test
 4. 더미로 한 번 더 확인 (입력원 "합성 신호(더미)", calm 시도 심박 약 72).
 5. 기기: 3.2절 주의를 지키고 시리얼로 켠다. 한 사이클, 답변 중 손 위치 바꾸기(접촉 보류), 5초 이상 대기("신호 대기"), USB 뽑았다 꽂기(오류 띠와 재연결), 없는 포트(COM99) 오류 표시를 확인한다.
 6. `npm run dev`(포트 4173)로 예전 데모가 그대로 동작하는지 본다.
+7. 별칭과 기록 화면(S17): 기기 연동 모드에서 "참가자 별칭"에 `P01`을 넣고 적용 → 세션 줄에 "참가자 P01", 이후 결과의 참가자 열. `홍길동!`처럼 규칙 밖 문자는 거부 문구. "이번 접속의 결과" 표와 "CSV 내보내기"(재생·더미는 파일 이름에 `not-for-training`).
+8. 기록 저장(S16): `-Save`(또는 `$env:SAVE="1"`)로 켜면 위쪽에 빨간 "기록 중", `data\server\<날짜시각>_<입력원>\`에 `run_info.json`, `trial_results.jsonl`(시리얼이면 `raw_serial_log.txt`도).
+
+### 3.6 발표용 실행 (S18)
+
+**발표 전 점검** (읽기 전용: 파일을 쓰지 않고 COM 포트를 열지 않는다, 목록만 본다):
+
+```
+.venv\Scripts\python.exe -m server.cli doctor
+```
+
+| 항목 | OK 조건 | 문제·주의일 때 해결 (출력에 한 줄로 나옴) |
+|---|---|---|
+| 파이썬 | 3.13 | `py -3.13 -m venv .venv`로 다시 만들고 패키지 설치 |
+| 패키지 | fastapi, uvicorn, websockets, numpy, scipy, pyserial, pandas(3 미만), scikit-learn, pytest import | `.venv\Scripts\python.exe -m pip install -r requirements.txt` |
+| web/dist | index.html, app.mjs, live.mjs, core.mjs, styles.css | 저장소를 다시 받거나 `git status`로 확인 |
+| COM 포트 | 하나 이상 (목록 표시) | 없으면 **주의**: 시리얼 불가, 재생·더미 가능. USB·드라이버 확인 |
+| 재생 로그 | `data/real/experiments/run_20261103_161545/raw_serial_log.txt` | 없으면 **주의**: 재생 불가, 더미 가능 (`-Source dummy`) |
+| 질문 은행 | `QUESTION_BANK`(기본 `collector/question_bank.csv`)를 읽음 | 파일·경로 확인 |
+
+문제가 하나라도 있으면 종료 코드 1, 주의만 있으면 0이다. 필요한 패키지가 없어도 점검은 돈다 (`server/doctor.py`는 표준 라이브러리만으로 시작한다).
+
+**서버 실행 스크립트** `scripts\start_demo.ps1` (저장소 루트에서):
+
+```
+.\scripts\start_demo.ps1 -Source replay
+.\scripts\start_demo.ps1 -Source dummy
+.\scripts\start_demo.ps1 -Source serial -Port COM6 -Save
+.\scripts\start_demo.ps1 -Source serial                  (포트 목록만 보여 주고 끝남)
+.\scripts\start_demo.ps1 -Source replay -WhatIf          (설정만 보여 주고 서버는 켜지 않음)
+```
+
+| 인자 | 값 (기본) | 뜻 |
+|---|---|---|
+| `-Source` | serial, replay, dummy (dummy) | 입력원 (`SOURCE`) |
+| `-Port` | `COM` + 숫자 | 시리얼 포트 (`SERIAL_PORT`). serial인데 없으면 `server.cli ports` 목록을 보여 주고 끝난다 (종료 코드 2) |
+| `-Seed` | 정수 (7) | 질문 순서 시드 (`QUESTION_SEED`) |
+| `-Save` | 스위치 (끔) | 기록 저장 (`SAVE=1`, 5.4절) |
+
+- 환경 변수는 스크립트가 도는 동안 프로세스 범위로만 설정하고, 끝나면(Ctrl+C 포함) 실행 전 값으로 되돌린다. `$env:`를 직접 쓸 때와 달리 창에 값이 남지 않는다. 그 밖의 변수(`REPLAY_SPEED`, `JUDGE` 등)는 건드리지 않으므로 창에 남아 있던 값이 그대로 쓰인다.
+- `.venv`가 없으면 만드는 방법을 안내하고 끝낸다 (종료 코드 1).
+- 주소 `http://127.0.0.1:8000`과 끄는 방법(Ctrl+C)을 출력한다. 서버는 이 PC에서만 접속된다 (`--host 127.0.0.1`).
+- 파일은 UTF-8(BOM 포함)이다. Windows PowerShell 5.1이 한글을 바르게 읽게 하려는 것이니 BOM을 지우지 않는다.
+- **실행 정책 때문에 "스크립트를 실행할 수 없습니다" 오류가 나면**, 정책을 바꾸지 말고 그 한 번만 우회해서 실행한다:
+  ```
+  powershell -ExecutionPolicy Bypass -File scripts\start_demo.ps1 -Source replay
+  ```
+  (`Set-ExecutionPolicy`로 정책 자체를 바꾸는 명령은 쓰지 않는다.)
+- 시리얼 주의(3.2절)는 그대로다: 수집기·시리얼 모니터를 닫고, 서버를 먼저 켠 뒤 기기에서 세션을 시작한다.
 
 ## 4. 아키텍처 (구현됨)
 
@@ -209,6 +266,7 @@ cd web; npm test
                               └──────────────▶ WebSocket /ws 방송 ◀───────────────────┘
                                                           ▼
                         [웹: 입력원, 단계, 세션, 그래프, 결과 카드, 이유, 배지, 심박 추정값]  (보기 전용)
+                              │ 웹 → 서버: 참가자 별칭(set_participant)만. 서버 → 기기: 없음
 ```
 
 - 입력원은 별도 스레드에서 돌고, 메시지는 이벤트 루프로 넘겨 접속자 전원에게 방송한다. 새 접속자에게는 상태, 마지막 오류, 기준 측정, 마지막 단계, 마지막 심박 추정값, 최근 약 20초의 샘플, 지금까지의 시도 결과(최대 200개)를 먼저 보낸다.
@@ -276,16 +334,25 @@ data/real/experiments/run_<날짜시각>/
 
 | type | 내용 |
 |---|---|
-| `device_status` | `input`(dummy/replay/serial), `input_label`, `live`, `source`(dummy/hardware), `connected`, `finished`, `message`, `port`, `replay_run`, `judge`(`name`, `requested`, `version`, `trained`, `exploratory`, `fallback_reason`, 규칙 판정기면 `rule_config`(설정 파일 경로 또는 null), `validated`) |
+| `device_status` | `input`(dummy/replay/serial), `input_label`, `live`, `source`(dummy/hardware), `connected`, `finished`, `message`, `port`, `replay_run`, `judge`(`name`, `requested`, `version`, `trained`, `exploratory`, `fallback_reason`, 규칙 판정기면 `rule_config`(설정 파일 경로 또는 null), `validated`), `saving`(기록 저장 중), `save_dir`(기록 폴더, 저장소 안이면 상대 경로), `save_error`(저장을 시작하지 못했거나 멈춘 이유, 없으면 null) |
 | `phase_update` | `phase`(단계 변화) 또는 `event`(손 접촉, 접촉 문제, 무효, 세션 시작/종료, 재부팅), `trial`, `esp_session`, `session_index`, `session_active` |
 | `sample_batch` | 그래프용 원시 샘플. 열 단위 배열(`time_ms, fsr, gsr, ir, red, phase, trial, seq, contact`), 2개 중 1개(25Hz), 0.25초마다, 묶음당 최대 100개(`dropped`에 버린 수) |
 | `baseline_result` | 기준 측정 평균/표준편차, 상태, 경고, 표준편차 하한 적용 여부 |
 | `bpm_update` | 심박 추정값 `bpm`(없으면 null), `estimate: true`, `reason`, `reason_text`, 1초마다 |
 | `question_update` | 시도에 배정한 질문: `session_index`, `trial`, `question_id`, `question_no`, `question_text`, `question_label`(연습 질문 / 본 질문 n/5 / 추가 질문 n), `role`, `exhausted`, `order_note`, `seed`. READY START에 배정하고 단계 메시지보다 먼저 보낸다. 세션이 끝나면 `question_text=null`로 비운다. 정답 라벨 키는 없다 (`label` 대신 `question_label`) |
+| `participant_update` | 현재 참가자 별칭 `alias`(없으면 null), `rejected`. 받아들이면 모두에게 방송하고 새 접속자에게도 다시 보낸다. 거부하면 보낸 접속자에게만 `rejected: true`, `message`(규칙 안내)와 지금 별칭을 보낸다 (S17) |
 | `trial_result` | PRD 9절 형식 + `judge_note`, `disclaimer`, `hold_code`, `device_status`, `question_id`, `question_text`, `question_label`. 학습된 판정기면 `score`(거짓 점수)와 `judge.exploratory`가 들어간다. 서버 전용 항목(`server_only`, 예: 알 수 없는 경고 비트)은 빼고 보낸다 |
 | `error` | `retryable`, 사용자용 `message` |
 
-웹 → 서버: **미구현.** 받은 메시지는 모두 무시한다 (보기 전용). 예전 설계의 `set_mode`, `new_session`은 만들지 않았다. 입력원은 서버 환경 변수로만 정한다.
+웹 → 서버 (S17): **참가자 별칭 하나뿐이다.**
+
+| type | 내용 |
+|---|---|
+| `set_participant` | `alias`: 참가자 별칭. 앞뒤 공백을 지운 뒤 한글(완성형)·영문·숫자·공백·`_`·`-`만, 1~20자. 그 밖의 문자(마침표, 따옴표, `<`, `=`, 자모, 이모지 등)와 빈 값, 21자 이상은 거부한다 |
+
+- 서버는 현재 별칭 하나를 메모리에 보관하고, 그 뒤 판정하는 `trial_result.participant_id`에 채운다 (판정 시점의 값, 이미 나간 결과는 바꾸지 않는다). 별칭을 받지 않았으면 null이다. `SAVE=1`이면 저장되는 결과에도 들어간다. 서버를 다시 켜면 비어 있다.
+- 그 밖의 웹 메시지(다른 `type`, JSON이 아닌 것, 1000자 넘는 것)는 읽지 않고 무시한다. 예전 설계의 `set_mode`, `new_session`은 만들지 않았다. 입력원은 서버 환경 변수로만 정한다.
+- 웹 메시지로 기기나 입력원을 제어하지 않으며, **PC에서 기기로 보내는 것은 여전히 없다.**
 
 ### 5.4 저장 규칙
 
@@ -294,7 +361,16 @@ data/real/experiments/run_<날짜시각>/
 - 원시 IR/Red/GSR/FSR 값과 품질 플래그를 보관한다.
 - `ground_truth`는 실험 기록에만 둔다.
 - 학습되지 않은 상태에서는 `model_version`, `score`를 null로 둔다.
-- **현재 서버는 기록을 저장하지 않는다 (I6).** 서버 전용 경고는 서버 콘솔 로그와 명령줄 출력에만 남는다. 데이터 수집은 수집기를 쓴다. 웹의 기록/내보내기 페이지는 예전 데모 기록만 다룬다.
+- **서버 기록 저장 (S16, `server/storage.py`)**: 환경 변수 `SAVE=1`일 때만 저장한다 (기본 꺼짐). 데이터 수집(라벨 포함)은 여전히 수집기(`docs/COLLECTION_GUIDE.md`)로 한다.
+  - 위치: `data/server/<날짜시각>_<입력원>/` (예: `20261104_153012_serial`). 같은 이름이 있으면 `_2`, `_3`…. `.gitignore` 대상.
+  - 금지: `data/real/`, `data/dummy/`, `collector/` 안에는 쓰지 않는다. 폴더를 만들기 전에 실제 경로로 검사하고, 걸리면 저장 없이 진행하며 화면에 알린다 (테스트로 확인).
+  - `run_info.json`: 형식 `truthpulse-server-record` 0.1, `input`, `source`, 입력원 이름, 판정기 정보(`judge`), 질문 시드와 은행, 재생 run·시리얼 포트·더미 설정, 시작·끝 시각, 결과 수, 원시 줄 수, `labels_saved: false`.
+  - `trial_results.jsonl`: 시도 결과 한 줄에 하나. 웹으로 보내는 `trial_result` + 서버 전용 항목(`server_only`) + `input`, `training_excluded`, `training_excluded_reason`, `saved_at`. nan은 null.
+  - `raw_serial_log.txt`: **시리얼 입력원일 때만.** `PC시각<TAB>기기 줄`, collector `raw_serial_log.txt`와 같은 형식(PC시각은 collector `now_str`). 빈 줄은 시리얼 입력원이 버리므로 남지 않는다. 재생 원본은 이미 `data/real`에 있으므로 다시 쓰지 않는다.
+  - 모든 기록에 `source`(dummy|hardware)와 `input`(dummy|replay|serial)을 남긴다. 재생·더미 기록은 폴더 이름에 입력원이 들어가고, `training_excluded: true`와 이유(재생: data/real 원본과 중복, 더미: 합성 신호)를 적는다. 학습 도구는 `data/real/experiments`만 읽으므로 `data/server/`를 읽지 않는다.
+  - 정답 라벨은 서버가 모르므로 저장하지 않는다. 저장 전에도 라벨 키 검사(`check_no_labels`)를 해서 섞이면 쓰지 않는다.
+  - 저장 중이면 `device_status.saving=true`, 웹 위쪽에 빨간 "기록 중"(끝나면 "기록 저장됨")과 폴더 경로(마우스를 올리면). 디스크 쓰기가 실패하면 서버는 계속 판정하고, `error` 한 번과 `saving=false`, `save_error`로 알린다 (웹: "기록 안 됨"과 위쪽 띠).
+- 서버 전용 경고는 서버 콘솔 로그와 명령줄 출력, 그리고 저장할 때 `trial_results.jsonl`의 `server_only`에 남는다. 웹의 기록/내보내기 페이지는 예전 데모 기록만 다룬다.
 
 ## 6. 판정기 인터페이스
 
@@ -515,7 +591,12 @@ run_20261103_161545,S02,1,71,
 - 연결이 끊기면 주황색 띠를 띄우고 1초부터 최대 5초 간격으로 자동 재연결한다. 재연결하면 서버가 상태와 기록을 다시 보내고, 같은 결과는 한 번만 표시한다.
 - 질문 문장: READY 단계에서는 다음 질문을 흐리게 미리 보여 주고(진행자 준비용), QUESTION 단계에서 크게, 그 시도의 답변·분석·결과 단계에서는 흐리게, 손 올리기·기준 측정·세션 종료와 다른 시도에서는 숨긴다. 안내 문구: 재생 "기록 당시 실제로 물은 질문과 다를 수 있습니다", 기기·더미 "질문 순서는 서버가 정합니다. 진행자는 화면의 질문을 읽어 주세요." 결과 카드와 최근 판정에도 질문 문장을 보여 준다.
 - 판정기 배지: `trained=false`면 "모델 미학습(데모)", 학습된 모델이면 "학습된 모델 v…", 탐색용이면 "탐색용 모델(검증 부족)". 점수가 있으면 "거짓 점수 0.xx"로 표시한다 (다른 이름을 쓰지 않음을 테스트로 확인). 학습 모델의 막대는 기여가 큰 특징 5개(+ 거짓 쪽, − 진실 쪽). 판정기 대체 이유는 위쪽 띠에 보여 준다.
-- 기기 연동 모드의 결과는 브라우저 기록 페이지에 저장하지 않는다 (기록/내보내기는 데모 기록만).
+- 기기 연동 모드의 결과는 브라우저 기록 페이지(데모 기록, `localStorage`)에 저장하지 않는다. 기존 데모 모드의 기록 페이지는 그대로다.
+- 참가자 별칭 (S17): 기기 연동 모드에서 조작 카드에 "참가자 별칭" 입력칸이 나온다. 서버와 같은 규칙으로 먼저 검사하고 `set_participant`로 보낸다. 받아들여지면 세션 줄에 "참가자 P01 · 질문 n", 거부되면 이유를 보여 준다. 실명·연락처를 쓰지 말라는 안내를 둔다.
+- 이번 접속의 결과 (S17): 기기 연동 모드에서 "이번 접속의 결과" 표(세션·질문, 참가자, 질문, 판정, 입력원)와 "CSV 내보내기". 새로고침하면 서버가 보관한 최근 결과(최대 200개)를 다시 받는다. CSV는 브라우저 다운로드만 하고 서버·브라우저 저장소에는 쓰지 않는다.
+  - 열: `input`, `input_label`, `source`, `training_excluded`(재생·더미면 true), `session_id`, `trial_id`, `participant_id`, `question_id`, `question_label`, `question_text`, `decision`, `decision_label`, `score`, `hold_code`, `hold_reason`, `reasons`, `fsr_local_dz`, `gsr_local_dz`, `judge_name`, `judge_version`, `judge_trained`, `judge_note`, `disclaimer`. 정답 라벨 열은 없다.
+  - 셀은 기존 데모 내보내기와 같은 `core.mjs csvCell`(UTF-8 BOM, 큰따옴표, `= + - @`로 시작하면 앞에 `'`)을 쓴다. 그래서 음수 값도 `'-3.71`처럼 나온다 (엑셀에서 문자로 보임).
+  - 파일 이름: `truthpulse-<입력원>-<날짜>_<시각>.csv`, 재생·더미는 `truthpulse-replay-not-for-training-…`처럼 표시한다.
 - 브라우저 화면 확인은 사람이 한다 (자동 브라우저 테스트 없음).
 
 ### 8.1 질문 순서 (`server/questions.py`, 게임 모드)
@@ -565,8 +646,11 @@ run_20261103_161545,S02,1,71,
 | 임계값 검증, 리포트 | RuleJudge와 같은 규칙, 격자, 빼 둔 참가자는 선택에 안 쓰임, 검증된 설정 제안, 5명 미만 탐색용(`validated: null`), 기준 미달 시 제안 안 함, 0건·더미·nan·한 클래스, 출력 보호, 리포트 내용·데이터 없음·부작용 파일 없음 | `tests/test_evaluation.py` |
 | 심박 비교 | 서버 코드로 추정, MAE·편향·결측 비율, 세션 표기, 잘못된 줄 건너뜀, 없는 run/시도, 라벨 파일 미열람, 출력 보호 | `tests/test_bpm_check.py` |
 | 학습 | 라벨 규칙과 제외 사유, 서버와 같은 특징, 라벨을 바꿔도 특징 동일, 더미 거부(폴더·SOURCE·행), 예전 형식, 0건 정상 종료, 참가자 분리, 테스트 폴드 비노출, 5명 미만 경고, 기준 미달 시 내보내기 거부, model.json 내용과 서빙 일치, 출력 보호, 결정성 | `tests/test_training.py` |
+| 발표용 도구 | doctor 항목별 OK/주의/문제와 해결 문장(파이썬 버전, 패키지 없음·pandas 3, web/dist, 포트 목록·없음·오류, 재생 로그, 질문 은행), 종료 코드, 읽기 전용. start_demo.ps1: BOM·CRLF, 인자(ValidateSet, COM 형식, 시드 7, Save), 프로세스 범위 환경 변수와 finally 복원, 정책 변경 명령 없음, 괄호 짝 (PowerShell 분석기 검사는 `TRUTHPULSE_PS_PARSE=1`일 때만) | `tests/test_doctor.py`, `tests/test_start_demo.py` |
+| 참가자 별칭 | 허용·거부 문자 규칙(서버·웹 같은 규칙), 다른 웹 메시지 무시, 결과와 저장 기록의 `participant_id`, 서버: 거부는 보낸 쪽에만·허용은 방송·새 접속자 재전송 | `tests/test_participant.py`, `web/tests/live.test.mjs` |
 | 질문 | 은행 라벨 열 무시, 순서·시드, 배정 규칙(질문 전/후 무효), 세션·재부팅, 소진, 실측 161545, 판정 미사용 | `tests/test_questions.py` |
 | 서버 | 임시 uvicorn + websockets: 방송, 새 접속자 재전송, 샘플·심박 전송 간격, 재생 결과, 오류 | `tests/test_app.py`, `tests/test_stream.py` |
+| 기록 저장 | 기본 꺼짐(아무것도 만들지 않음), 보호 폴더(data/real, data/dummy, collector) 거부·폴더 미생성, 더미·재생·시리얼(가짜) 기록 내용과 표시, 시리얼 원시 줄이 collector 형식으로 다시 읽힘, 라벨 키 거부, nan→null, 쓰기 실패 시 서버 계속·한 번 알림, `.gitignore` | `tests/test_storage.py` |
 | 웹 | 입력원 문구("실시간" 금지), 판정 화면 모델, 재연결, 세션 표시, 심박 표시 | `web/tests/live.test.mjs` (+ 기존 `core.test.mjs`) |
 | 통합 | 사람이 브라우저로 확인 (3.5절). 더미 10회 연속, 재생, 실제 기기 | — |
 
@@ -578,7 +662,7 @@ run_20261103_161545,S02,1,71,
 | I2 | 기기 dz가 -32처럼 매우 크고 세션이 길어질수록 한 방향으로 커진다. 판정은 국소 dz와 표준편차 하한으로 완화했지만 국소 GSR의 방향성은 남는다 (7.1절). 클리핑은 화면 막대에서만 한다. | 완화됨, 원인 미확인 |
 | I3 | 펌웨어 소스가 저장소에 없다. | 미해결 |
 | I4 | 웹의 심박 채널: 서버가 IR로 심박을 추정해 보낸다 (7.3절). | 구현됨 (추정값, 미검증) |
-| I6 | 서버가 받은 기록(특히 serial)을 저장하지 않는다. 저장 위치(`data/real/`은 읽기 전용, `data/dummy/`와 섞으면 안 됨)와 형식을 정해야 한다. | 미해결 |
+| I6 | 서버가 받은 기록을 저장하지 않았다. S16에서 `SAVE=1`일 때 `data/server/`에 저장하도록 했다 (5.4절). 라벨은 저장하지 않으므로 학습 데이터 수집은 여전히 수집기로 한다. 실기기 시리얼로 오래 저장해 본 기록은 없다. | 구현됨 (기본 꺼짐, 실기기 미확인) |
 | I7 | 실험 로그(`run_20261103_154858`)에 ESP32 크래시(`Guru Meditation Error: Core 1 panic'ed (LoadProhibited)`)와 레지스터 덤프 21줄이 있다. 해석기는 넘어간다. | 펌웨어 확인 필요 |
 | I8 | `collector/test_replay.py`가 `experiments/`를 현재 폴더 기준으로 찾아서, 저장소 루트에서 실행하면 T8, T9가 건너뛰어진다. | 미해결 (collector 수정 필요, 확인 후 진행) |
 | I9 | 기기가 LED/OLED 참/거짓을 어떻게 판정하는지 모른다. 연결이 USB인지 블루투스(SPP)인지 문서로 확인되지 않았다 (COM 포트 읽기는 사용자가 실기기로 확인). | 펌웨어 확인 필요 |
@@ -589,7 +673,7 @@ run_20261103_161545,S02,1,71,
 | I14 | 심박 추정값을 정답 심박(심전도, 다른 측정기)과 비교한 적이 없다. 정확도는 모른다. 비교 도구는 있다 (`training.bpm_check`, 7.6절). | 미검증 (기준 측정 필요) |
 | I15 | RuleJudge 임계값 3.0σ는 관례값이며 라벨로 검증하지 않았다. 실측 161545에서 진실 5, 거짓 2, 보류 4가 나오지만 맞았는지는 알 수 없다. 검증 도구(`training.evaluate_rule`)와 설정 파일(`RULE_CONFIG`)은 있다. | 미검증 (라벨 데이터 필요) |
 | I16 | 더미 입력원의 일부 흐름(답변 중 손 뗌의 이벤트 순서, 보류 직후 세션 종료 버튼, 표준편차 식)은 실측으로 확인하지 않은 가정이다. | 한계 |
-| I17 | 게임 모드 질문 문장 표시는 구현했다 (8.1절, 서버가 정한 순서). 참가자 별칭 입력은 없다 (웹에서 서버로 보내는 메시지 없음, `participant_id`는 null). | 질문 표시 구현됨, 별칭 미구현 |
+| I17 | 게임 모드 질문 문장 표시(8.1절)와 참가자 별칭 입력(S17, `set_participant`)을 구현했다. 별칭은 서버 메모리에만 있어 서버를 다시 켜면 다시 입력해야 한다. | 구현됨 |
 
 ## 12. 단계 체크리스트
 
@@ -612,8 +696,12 @@ run_20261103_161545,S02,1,71,
 - [x] **S12** 학습 파이프라인 (확정 라벨 데이터셋, 참가자 분리 검증, 기준 모델 비교, model.json 안전장치) (2026-11-04)
 - [x] **S13** `LogregJudge`와 `JUDGE=logreg` 전환 (model.json 검사, 규칙 판정기 대체, 거짓 점수·기여 이유·배지) (2026-11-04)
 - [x] **S14** 규칙 임계값 설정 파일(`RULE_CONFIG`)과 중첩 검증(`evaluate_rule`), 평가 리포트(`report`), 심박 비교(`bpm_check`) — 가짜 데이터로만 검증 (2026-11-04)
+- [x] **S15** 진행자용 데이터 수집 가이드 `docs/COLLECTION_GUIDE.md` (문서만) (2026-11-04)
+- [x] **S16** 서버 기록 저장 `SAVE=1` (`data/server/`, 보호 폴더 거부, 시리얼 원시 줄, 학습 제외 표시, "기록 중" 표시) (2026-11-04)
+- [x] **S17** 참가자 별칭(`set_participant`, 웹 → 서버 유일한 메시지)과 기록 화면(이번 접속의 결과, CSV 내보내기) (2026-11-04)
+- [x] **S18** 발표용 도구: `scripts/start_demo.ps1`, `python -m server.cli doctor` (2026-11-04)
 - [x] **M3** FastAPI + WebSocket, 웹 연결(보기 전용), 단계 표시, 배지 (2026-11-04, M2의 S4·S5로 진행)
-- [ ] **M4** 펌웨어 소스 확인 후 기기 결과와 서버 판정 일치 방안 결정, I6 결정
+- [ ] **M4** 펌웨어 소스 확인 후 기기 결과와 서버 판정 일치 방안 결정 (I6은 S16에서 구현)
 - [ ] **M5** `RuleJudge` (시연 예비안), 임계값 설정 파일 — RuleJudge는 M2-S3, 설정 파일(`RULE_CONFIG`)과 검증 도구는 S14에서 구현(2026-11-04). 라벨 데이터로 실제 검증은 남음
 - [ ] **M6** 학습 파이프라인(참가자 분리 검증), `model.json`, `LogregJudge` 교체 — 파이프라인과 model.json 내보내기는 S12, `LogregJudge`와 `JUDGE=logreg` 전환은 S13에서 구현(2026-11-04). 라벨 확정 데이터 0건이라 학습과 실제 교체는 아직 못 함
 - [ ] **M7** 통합 테스트, 리허설, (선택) ESP32 이식과 저주파 피드백
@@ -624,8 +712,8 @@ M1의 수집은 개발과 병행해서 계속한다. M6은 라벨이 확정된 �
 
 우선순위는 제안이며 사용자가 정한다.
 
-1. **라벨 데이터 수집 (M1):** 짧은 실제 세션으로 본 질문 라벨(`condition`, `confirmed`)이 남는지 확인한 뒤 본격 수집. 수집기와 서버는 같은 포트를 동시에 쓸 수 없으므로 수집은 수집기로 한다.
-2. **서버 기록 저장 (I6):** 저장 위치와 형식 결정 후 `server/storage.py` (모든 기록에 `source`).
+1. **라벨 데이터 수집 (M1):** 짧은 실제 세션으로 본 질문 라벨(`condition`, `confirmed`)이 남는지 확인한 뒤 본격 수집. 수집기와 서버는 같은 포트를 동시에 쓸 수 없으므로 수집은 수집기로 한다. 진행 방법은 `docs/COLLECTION_GUIDE.md`. 수집기의 `--out`·`--bank` 기본값은 실행 폴더 기준이므로 저장소 루트에서 `--out data\real\experiments --bank collector\question_bank.csv`를 직접 지정한다.
+2. **서버 기록 저장 (I6):** S16에서 구현(`SAVE=1`). 실기기 시리얼로 한 세션 저장해 `raw_serial_log.txt`가 수집기 기록과 같은 형식인지, 디스크 사용량을 확인한다.
 3. **로지스틱 회귀 (M6):** 파이프라인(S12)과 판정기(S13) 완료. 라벨 데이터가 모이면 `python -m training.train_logreg`를 실행하고, model.json이 만들어지면 `JUDGE=logreg`로 바꿔 쓴다. 거짓 점수의 보정 평가는 아직 없다.
 4. **RuleJudge 임계값 검증 (M5):** 도구는 S14에서 완료. 라벨 데이터가 모이면 `python -m training.evaluate_rule`과 `python -m training.report`를 실행하고, 제안된 `rule_config.json`을 검토한 뒤 `RULE_CONFIG`로 직접 적용한다.
 5. **심박 추정 검증 (I14):** 다른 측정기나 맥박 세기로 기준 CSV를 만들어 `python -m training.bpm_check`로 비교(7.6절), 그 뒤에 `hr_delta` 특징 검토.
@@ -633,7 +721,7 @@ M1의 수집은 개발과 병행해서 계속한다. M6은 라벨이 확정된 �
 7. **버튼 디바운스 (펌웨어):** 로그의 `IGNORED_*` 버튼 이벤트와 POLL/IRQ 중복 여부를 펌웨어 소스와 함께 확인한다.
 8. **펌웨어 확인 (I3, I7, I9, I11, I13):** LED/OLED 판정 기준, 크래시 원인, 경고 비트 64, DTR/RTS 동작.
 9. **TIME_GAPS 원인 확인 (I10):** 원시 샘플 검사 연결은 S10에서 완료. 36~40ms 간격의 원인(펌웨어 루프, USB 전송 등)은 미확인.
-10. **참가자 별칭 입력 (I17).** 질문 표시는 S9에서 구현.
+10. **참가자 별칭 (I17):** S17에서 구현. 실제 진행에서 별칭을 바꾸는 시점(세션 시작 전)을 진행 절차에 넣는다.
 11. **`collector/test_replay.py` 경로 문제 (I8):** collector 수정이 필요하므로 이유와 영향을 알리고 확인을 받은 뒤 진행.
 
 ## 14. Git과 문서 관리

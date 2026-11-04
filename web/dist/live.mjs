@@ -1,5 +1,7 @@
 // 기기 연동 모드: Python 서버의 /ws에 연결해 기기 단계, 그래프 샘플, 판정 결과를 받는다 (보기 전용).
 // 이 파일은 DOM을 직접 다루지 않는다. 화면 갱신은 app.mjs가 하고, 여기에는 연결과 순수 함수만 둔다.
+// 웹 → 서버로 보내는 것은 참가자 별칭(set_participant) 하나뿐이다. 서버도 기기로는 아무것도 보내지 않는다.
+import { csvCell } from './core.mjs';
 
 export const UNTRAINED_BADGE = '모델 미학습(데모)';
 export const WINDOW_MS = 20000;            // 타임라인 그래프 구간 (기기 시각 기준)
@@ -110,6 +112,15 @@ export function featureLabel(name) {
   return `${sensor} ${kind}${ref}`;
 }
 export const MAX_LOGREG_BARS = 5;
+// 서버 기록 저장 (SAVE=1). 저장 중이면 위쪽에 '기록 중', 저장 실패는 '기록 안 됨'과 위쪽 띠.
+export function saveView(status) {
+  if (status?.saving) {
+    return { show: true, kind: 'on', text: status.finished ? '기록 저장됨' : '기록 중', title: status.save_dir ? `서버 기록 폴더: ${status.save_dir}` : '서버가 기록을 저장하는 중' };
+  }
+  if (status?.save_error) return { show: true, kind: 'error', text: '기록 안 됨', title: status.save_error };
+  return { show: false, kind: '', text: '', title: '' };
+}
+export const saveNotice = status => status?.save_error ?? null;
 // 판정기 대체 안내 (JUDGE=logreg인데 model.json을 쓸 수 없을 때)
 export const judgeNotice = status => status?.judge?.fallback_reason ?? null;
 export const resultKey = r => [r.source, r.session_id, r.trial_id, r.baseline_id].join('|');
@@ -183,8 +194,50 @@ export function questionView(question, phaseMsg, session) {
   return { mode, text: question.question_text, label: question.question_label ?? '', heading: QUESTION_HEADINGS[mode], note: question.order_note ?? '' };
 }
 
+// 참가자 별칭 (S17). 서버(server/app.py validate_alias)와 같은 규칙: 앞뒤 공백 제거 후 한글·영문·숫자·공백·_- 1~20자.
+export const ALIAS_MAX = 20;
+export const ALIAS_RULE = `별칭은 한글·영문·숫자·공백·_- 로 1~${ALIAS_MAX}자만 쓸 수 있습니다 (실명·연락처는 쓰지 마세요).`;
+const ALIAS_RE = /^[0-9A-Za-z가-힣 _-]{1,20}$/;
+export function validateAlias(value) {
+  const alias = typeof value === 'string' ? value.trim() : '';
+  return ALIAS_RE.test(alias) ? { ok: true, alias, message: '' } : { ok: false, alias: null, message: ALIAS_RULE };
+}
+export const participantMessage = alias => ({ type: 'set_participant', alias });
+
+// 이번 접속의 결과 목록과 CSV (S17). 브라우저 다운로드만 하고 서버·브라우저 저장소에는 쓰지 않는다.
+// 재생·더미 결과는 파일 이름과 training_excluded 열에 표시한다 (학습에 쓰지 않음).
+export const TRAINING_EXCLUDED_INPUTS = new Set(['replay', 'dummy']);
+export const LIVE_CSV_FIELDS = ['input', 'input_label', 'source', 'training_excluded', 'session_id', 'trial_id', 'participant_id',
+  'question_id', 'question_label', 'question_text', 'decision', 'decision_label', 'score', 'hold_code', 'hold_reason', 'reasons',
+  'fsr_local_dz', 'gsr_local_dz', 'judge_name', 'judge_version', 'judge_trained', 'judge_note', 'disclaimer'];
+export function resultsToCsv(results, status) {
+  const input = status?.input ?? '';
+  const rows = (results ?? []).map(r => {
+    const f = r.features ?? {};
+    return {
+      input, input_label: inputLabel(status), source: r.source ?? '', training_excluded: TRAINING_EXCLUDED_INPUTS.has(input) || r.source === 'dummy',
+      session_id: r.session_id, trial_id: r.trial_id, participant_id: r.participant_id ?? '',
+      question_id: r.question_id ?? '', question_label: r.question_label ?? '', question_text: r.question_text ?? '',
+      decision: r.decision, decision_label: DECISION_LABELS[r.decision] ?? '', score: Number.isFinite(r.score) ? r.score : '',
+      hold_code: r.hold_code ?? '', hold_reason: r.hold_reason ?? '', reasons: (r.reasons ?? []).join(' / '),
+      fsr_local_dz: Number.isFinite(f.fsr_local_dz) ? f.fsr_local_dz : '', gsr_local_dz: Number.isFinite(f.gsr_local_dz) ? f.gsr_local_dz : '',
+      judge_name: r.judge?.name ?? '', judge_version: r.judge?.version ?? '', judge_trained: r.judge?.trained === true,
+      judge_note: r.judge_note ?? '', disclaimer: r.disclaimer ?? '',
+    };
+  });
+  // 수식 문자 이스케이프와 BOM은 기존 데모 내보내기(core.mjs csvCell)와 같은 방식
+  return '\uFEFF' + [LIVE_CSV_FIELDS, ...rows.map(row => LIVE_CSV_FIELDS.map(k => row[k]))].map(row => row.map(csvCell).join(',')).join('\r\n');
+}
+export function liveCsvFileName(status, now = new Date()) {
+  const p = n => String(n).padStart(2, '0');
+  const stamp = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}_${p(now.getHours())}${p(now.getMinutes())}`;
+  const input = ['serial', 'replay', 'dummy'].includes(status?.input) ? status.input : 'unknown';
+  const mark = TRAINING_EXCLUDED_INPUTS.has(input) ? '-not-for-training' : '';
+  return `truthpulse-${input}${mark}-${stamp}.csv`;
+}
+
 // 상태
-export const initialState = () => ({ status: null, phase: null, session: null, bpm: null, question: null, events: [], baseline: null, results: [], samples: [], error: null });
+export const initialState = () => ({ status: null, phase: null, session: null, bpm: null, question: null, events: [], baseline: null, results: [], samples: [], error: null, participant: null, participantError: null });
 export function batchToPoints(b) {
   const n = Array.isArray(b?.time_ms) ? b.time_ms.length : 0;
   return Array.from({ length: n }, (_, i) => ({
@@ -205,6 +258,10 @@ export function reduce(state, msg) {
     case 'baseline_result': return { ...state, baseline: msg };
     case 'bpm_update': return { ...state, bpm: msg };
     case 'question_update': return { ...state, question: msg };
+    // 거부(rejected)는 보낸 화면에만 온다: 지금 별칭은 그대로 두고 이유만 보여 준다
+    case 'participant_update': return msg.rejected
+      ? { ...state, participantError: msg.message ?? ALIAS_RULE }
+      : { ...state, participant: msg.alias ?? null, participantError: null };
     case 'trial_result': {
       const key = resultKey(msg);
       const results = [...state.results.filter(r => resultKey(r) !== key), msg].slice(-MAX_RESULTS);
@@ -262,5 +319,12 @@ export function connectLive({ url, onMessage, onState, WebSocketImpl = globalThi
     delay = Math.min(maxDelay, delay * 2);
   }
   open();
-  return { close() { closed = true; if (timer) clearTimer(timer); try { ws?.close(); } catch { /* 무시 */ } } };
+  return {
+    close() { closed = true; if (timer) clearTimer(timer); try { ws?.close(); } catch { /* 무시 */ } },
+    // 서버로 보내기 (참가자 별칭만 쓴다). 연결이 열려 있지 않으면 false.
+    send(obj) {
+      if (!ws || ws.readyState !== 1) return false;
+      try { ws.send(JSON.stringify(obj)); return true; } catch { return false; }
+    },
+  };
 }
