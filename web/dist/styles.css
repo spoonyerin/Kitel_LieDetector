@@ -37,3 +37,19 @@
 .badge-trained{border-color:#9cb087;background:#eef5e6;color:#3f6a35}
 .badge-exploratory{border-color:#d9b58f;background:#fbf2e8;color:#9a6334}
 .live-score{font-size:11px;color:#56674d;border:1px solid var(--line);border-radius:4px;padding:3px 7px}
+/* 서버 기록 저장 표시 (S16, SAVE=1) */
+.save-pill{display:flex;align-items:center;gap:6px;font-size:11px;border:1px solid #e6c7c0;background:#fbefec;padding:7px 11px;border-radius:20px;color:#a2493a}
+.save-pill i{width:7px;height:7px;border-radius:50%;background:#d0533e;display:inline-block}
+.save-pill.error{border-color:#e2c48f;background:#fbf3e3;color:#8a6420}
+.save-pill.error i{background:#c99a3b}
+/* 참가자 별칭과 이번 접속의 결과 (S17) */
+.live-participant{margin:12px 0 4px}
+.live-participant label{display:block;font-size:11px;color:#56674d;margin-bottom:4px}
+.alias-row{display:flex;gap:6px}
+.alias-row input{flex:1;min-width:0;font:inherit;font-size:13px;padding:7px 9px;border:1px solid var(--line);border-radius:6px}
+.alias-error{color:#a2493a}
+.live-table-wrap{max-height:280px;overflow:auto}
+.live-table{width:100%;border-collapse:collapse;font-size:11px}
+.live-table th,.live-table td{text-align:left;padding:5px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+.live-table th{color:#7d8873;font-weight:500;position:sticky;top:0;background:#fff}
+.decision-lie{color:#a2493a}.decision-inconclusive{color:#8a8a7a}

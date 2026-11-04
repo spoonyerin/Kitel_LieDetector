@@ -9,6 +9,8 @@ parse : 원시 로그를 줄 해석기로 읽고 종류별 개수, 요약의 val
 replay: 원시 로그를 재생해 진행 추적기에 넣고 단계 변화와 시도별 결과를 출력한다 (source=hardware).
 dummy : 합성 신호를 진행 추적기에 넣고 같은 형식으로 출력한다 (source=dummy).
 ports : 연결된 COM 포트 목록을 보여 준다 (포트를 열지 않는다).
+doctor: 발표 전 점검 (파이썬 3.13, 패키지, web/dist, COM 포트 목록, 재생 로그, 질문 은행). server/doctor.py.
+        패키지가 빠져 있어도 동작하도록 아래의 무거운 import보다 먼저 처리한다.
 questions: 시드별 질문 순서를 미리 본다 (연습 1 + 본 질문 5 + 추가 질문). 라벨은 없다.
 bpm   : 원시 로그의 IR로 심박수를 1초(기기 시각)마다 추정해 분포와 계산 못 한 사유를 보여 준다.
         추정값이며 정답 심박과 비교하지 않았다.
@@ -23,6 +25,10 @@ import os
 import sys
 from collections import Counter
 from typing import Optional
+
+if __name__ == "__main__" and sys.argv[1:2] == ["doctor"]:   # numpy 등이 없어도 점검은 돌게 한다
+    from server.doctor import main as _doctor_main
+    sys.exit(_doctor_main(sys.argv[2:]))
 
 from server.judges.rule import RuleJudge
 from server.result import judge_trial
@@ -357,12 +363,20 @@ def cmd_ports(args, lister=None) -> int:
     return 0
 
 
+def cmd_doctor(args) -> int:
+    from server.doctor import main as doctor_main
+    return doctor_main()
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="server.cli", description="TruthPulse 서버 명령줄 도구 (읽기 전용)")
     sub = ap.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("ports", help="연결된 COM 포트 목록 (포트를 열지 않음)")
     p.set_defaults(func=cmd_ports)
+
+    p = sub.add_parser("doctor", help="발표 전 점검 (읽기 전용, 포트를 열지 않음)")
+    p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("features", help="원시 로그의 시도별 전체 특징을 CSV로 쓴다 (data/real 안에는 쓰지 않음)")
     p.add_argument("paths", nargs="+", help="run 폴더 또는 raw_serial_log.txt (여러 개 가능, 읽기 전용)")

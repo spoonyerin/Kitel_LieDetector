@@ -5,20 +5,23 @@
     (입력원은 환경 변수 SOURCE=dummy|replay, 자세한 설정은 server/config.py)
 
 흐름: 입력원(별도 스레드) → Tracker → judge_trial → 메시지 → /ws 접속자 전원에게 방송
-- 서버와 웹은 보기 전용이다. 웹에서 오는 메시지로 기기나 입력원을 제어하지 않는다.
-- 재생 입력원은 data/real을 읽기만 한다. 서버는 파일을 쓰지 않는다.
+- 서버와 웹은 보기 전용이다. 웹에서 오는 메시지로 기기나 입력원을 제어하지 않는다. PC→기기로 보내는 것은 없다.
+- 웹 → 서버는 참가자 별칭 하나뿐이다: {"type": "set_participant", "alias": "..."} (S17). 별칭만 받고
+  (1~20자, 한글·영문·숫자·공백·_-), 이후 시도 결과의 participant_id에 채운다. 그 밖의 웹 메시지는 무시한다.
+- 재생 입력원은 data/real을 읽기만 한다. 서버는 SAVE=1일 때만 data/server/에 기록을 쓴다 (server/storage.py).
 - 새 접속자에게는 현재 입력원 상태, 마지막 오류, 기준 측정, 마지막 단계, 최근 샘플,
   지금까지의 시도 결과를 먼저 보낸다
   (새로고침해도 화면이 비지 않게).
 
 서버 → 웹 메시지 (docs/development.md 5.3절):
-    device_status  입력원 이름과 종류(재생/합성/실시간), 연결 여부, 끝났는지
+    device_status  입력원 이름과 종류(재생/합성/실시간), 연결 여부, 끝났는지, 기록 저장 중인지(saving)
     phase_update   기기 단계 변화 또는 단계 안의 사건(손 접촉, 세션 시작/종료, 재부팅)
     sample_batch   그래프용 원시 샘플 묶음 (server/stream.py: 솎기, 0.2~0.5초 간격, 최대 개수 제한)
     bpm_update     IR로 추정한 심박수 (server/pipeline/bpm.py, 0.5~1초 간격, 화면 표시용, 판정에 안 씀)
     question_update 시도에 배정한 질문 문장 (server/questions.py, 서버가 정한 순서, 라벨 없음)
     baseline_result 기준 측정 결과 (평균, 표준편차, 상태, 하한 적용 여부)
-    trial_result   server.result.judge_trial의 결과 그대로 (judge_note, disclaimer 포함)
+    trial_result   server.result.judge_trial의 결과 그대로 (judge_note, disclaimer 포함, participant_id = 현재 별칭)
+    participant_update 현재 참가자 별칭 (모두에게 방송, 새 접속자에게 재전송). 거부하면 보낸 접속자에게만 rejected=true
     error          입력원 오류 (retryable, message)
 """
 
@@ -26,6 +29,7 @@ import asyncio
 import json
 import logging
 import mimetypes
+import re
 import threading
 import time
 from collections import deque
@@ -46,6 +50,7 @@ from server.source.dummy_source import DummyConfig, DummySource
 from server.source.lines import Sample
 from server.source.replay_source import ReplaySource
 from server.source.serial_source import SerialSource, SourceStatus
+from server.storage import ServerRecorder, StorageError
 from server.stream import SampleBatcher, baseline_message
 
 # Windows 레지스트리에 따라 .mjs가 JavaScript로 인식되지 않을 수 있어 직접 지정한다 (모듈 스크립트 필수).
@@ -63,6 +68,55 @@ INPUT_INFO = {
     # serial의 live는 기기 줄을 실제로 받는 동안만 true (SourceStatus receiving/idle/disconnected로 바뀜)
     "serial": {"label": "실시간 기기", "live": False},
 }
+
+
+# ----------------------------------------------------------
+# 참가자 별칭 (웹 → 서버, S17)
+# ----------------------------------------------------------
+ALIAS_MAX = 20
+ALIAS_RE = re.compile(r"[0-9A-Za-z가-힣 _\-]{1,%d}" % ALIAS_MAX)   # 한글(완성형), 영문, 숫자, 공백, _ -
+ALIAS_RULE = f"별칭은 한글·영문·숫자·공백·_- 로 1~{ALIAS_MAX}자만 쓸 수 있습니다 (실명·연락처는 쓰지 마세요)."
+MAX_CLIENT_MESSAGE = 1000   # 이보다 긴 웹 메시지는 읽지 않고 버린다
+
+
+def validate_alias(value):
+    """(별칭, None) 또는 (None, 거부 이유). 앞뒤 공백은 지운다."""
+    if not isinstance(value, str):
+        return None, ALIAS_RULE
+    alias = value.strip()
+    if not ALIAS_RE.fullmatch(alias):
+        return None, ALIAS_RULE
+    return alias, None
+
+
+class ParticipantState:
+    """현재 참가자 별칭. 웹소켓 처리(이벤트 루프)가 쓰고 입력원 스레드가 읽으므로 잠금을 쓴다."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._alias: Optional[str] = None
+
+    def get(self) -> Optional[str]:
+        with self._lock:
+            return self._alias
+
+    def set(self, alias: str) -> None:
+        with self._lock:
+            self._alias = alias
+
+
+def parse_client_message(text: str):
+    """웹 메시지 → ("set_participant", 별칭) / ("rejected", 이유) / None(무시)."""
+    if not isinstance(text, str) or len(text) > MAX_CLIENT_MESSAGE:
+        return None
+    try:
+        msg = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(msg, dict) or msg.get("type") != "set_participant":
+        return None
+    alias, why = validate_alias(msg.get("alias"))
+    return ("set_participant", alias) if why is None else ("rejected", why)
 
 
 # ----------------------------------------------------------
@@ -109,8 +163,11 @@ def _event_msg(name, detail="", trial=0, esp_session=None, esp_time_ms=None):
                       "esp_session": esp_session, "esp_time_ms": esp_time_ms}}
 
 
-def update_to_message(u, source_label: str, judge, tracker=None) -> Optional[dict]:
-    """추적기 알림 하나를 웹 메시지로 바꾼다. 보낼 것이 없으면 None."""
+def update_to_message(u, source_label: str, judge, tracker=None, full: bool = False) -> Optional[dict]:
+    """추적기 알림 하나를 웹 메시지로 바꾼다. 보낼 것이 없으면 None.
+
+    full=True면 trial_result에서 서버 전용 항목(server_only)을 빼지 않는다 (기록 저장용, 웹으로 보내기 전에 for_web).
+    """
     if isinstance(u, PhaseChanged):
         return {"type": "phase_update", "phase": u.phase, "trial": u.trial, "esp_session": u.esp_session,
                 "baseline_id": u.baseline_id, "esp_time_ms": u.esp_time_ms, "event": None}
@@ -129,7 +186,7 @@ def update_to_message(u, source_label: str, judge, tracker=None) -> Optional[dic
         hidden = res.get("server_only", {}).get("warnings")
         if hidden:  # 화면에는 보이지 않는 경고: 서버 로그에만 남긴다
             logger.warning("서버 전용 경고 %s T%02d: %s", res["session_id"], res["trial_id"], ", ".join(hidden))
-        return for_web(res)
+        return res if full else for_web(res)
     if isinstance(u, BaselineDone):
         return baseline_message(u.segment, source_label)
     return None
@@ -148,7 +205,8 @@ def with_session(msg: dict, tracker: Tracker) -> dict:
     return msg
 
 
-def run_pipeline(settings: Settings, emit, stop: threading.Event, source=None) -> None:
+def run_pipeline(settings: Settings, emit, stop: threading.Event, source=None,
+                 participant: Optional[ParticipantState] = None) -> None:
     """별도 스레드에서 돈다. emit(msg)로 메시지를 넘긴다. stop이 켜지면 바로 멈춘다.
 
     source를 주면 그 입력원을 쓴다 (테스트에서 가짜 시리얼 입력원을 넣을 때).
@@ -158,11 +216,32 @@ def run_pipeline(settings: Settings, emit, stop: threading.Event, source=None) -
     """
     raw_emit = emit
     judge_status = {}
+    # 기록 저장 (SAVE=1일 때만). 실패해도 서버는 멈추지 않고 화면에 알린다.
+    save = {"recorder": None, "error": None, "reported": False}
+    last_status = {}
 
-    def emit(msg):   # device_status에는 현재 판정기 정보를 붙인다
-        if msg.get("type") == "device_status" and judge_status:
-            msg["judge"] = dict(judge_status)
+    def emit(msg):   # device_status에는 현재 판정기 정보와 기록 저장 상태를 붙인다
+        if msg.get("type") == "device_status":
+            if judge_status:
+                msg["judge"] = dict(judge_status)
+            rec = save["recorder"]
+            msg["saving"] = bool(rec is not None and rec.ok)
+            msg["save_dir"] = rec.rel_dir if rec is not None else None
+            msg["save_error"] = save["error"]
+            last_status.clear()
+            last_status.update(msg)
         raw_emit(msg)
+
+    def check_save():
+        """기록 쓰기가 실패했으면 한 번만 error와 새 device_status(saving=false)로 알린다."""
+        rec = save["recorder"]
+        if rec is None or rec.ok or save["reported"]:
+            return
+        save["reported"], save["error"] = True, rec.error
+        logger.warning(rec.error)
+        raw_emit({"type": "error", "retryable": False, "message": rec.error})
+        if last_status:
+            emit(dict(last_status))
 
     try:
         judge, fallback = select_judge(settings.judge, settings.model_path, settings.allow_exploratory_model,
@@ -176,6 +255,15 @@ def run_pipeline(settings: Settings, emit, stop: threading.Event, source=None) -
         if fallback:
             logger.warning(fallback)
         source = source or make_source(settings, sleep=stop.wait, stop=stop)
+        if settings.save:
+            try:
+                save["recorder"] = ServerRecorder(settings.save_root, settings.source, source.source)
+                logger.warning("서버 기록 저장 중: %s", save["recorder"].dir)
+            except StorageError as e:
+                save["error"] = f"기록을 저장할 수 없어 저장 없이 진행합니다: {e}"
+                save["reported"] = True
+                logger.warning(save["error"])
+                raw_emit({"type": "error", "retryable": False, "message": save["error"]})
         tracker = Tracker(source.source)
         batcher = SampleBatcher(source.source, batch_sec=settings.sample_batch_sec,
                                 decimate=settings.sample_decimate, max_samples=settings.sample_max_per_batch)
@@ -204,16 +292,35 @@ def run_pipeline(settings: Settings, emit, stop: threading.Event, source=None) -
         except Exception as e:
             emit({"type": "error", "retryable": False, "message": f"질문 은행을 읽을 수 없어 질문 없이 진행합니다: {e}"})
 
+        if save["recorder"] is not None:   # 서버 실행 설정 (라벨 없음)
+            save["recorder"].write_info(
+                input_label=INPUT_INFO[settings.source]["label"], judge=dict(judge_status),
+                question_seed=planner.seed if planner is not None else settings.question_seed,
+                question_bank=settings.question_bank,
+                replay_run=settings.replay_run if settings.source == "replay" else None,
+                serial_port=settings.serial_port if settings.source == "serial" else None,
+                serial_baud=settings.serial_baud if settings.source == "serial" else None,
+                dummy={"trials": settings.dummy_trials, "patterns": list(settings.dummy_patterns),
+                       "seed": settings.dummy_seed} if settings.source == "dummy" else None)
+            check_save()
+
         def handle(updates):
             for u in updates:
                 if (isinstance(u, PhaseChanged) and u.phase in BPM_PAUSE_PHASES) or isinstance(u, DeviceRebooted):
                     pause_bpm()
-                msg = update_to_message(u, source.source, judge, tracker)
-                if msg is not None and msg.get("type") == "trial_result" and planner is not None:
-                    q = planner.question_for(u.segment.session_index, u.segment.trial)
-                    msg["question_id"] = q.question_id if q else None
-                    msg["question_text"] = q.question_text if q else None
-                    msg["question_label"] = q.label if q else None
+                msg = update_to_message(u, source.source, judge, tracker, full=True)
+                if msg is not None and msg.get("type") == "trial_result":
+                    # 판정 시점의 참가자 별칭 (웹에서 받은 값, 없으면 null)
+                    msg["participant_id"] = participant.get() if participant is not None else None
+                    if planner is not None:
+                        q = planner.question_for(u.segment.session_index, u.segment.trial)
+                        msg["question_id"] = q.question_id if q else None
+                        msg["question_text"] = q.question_text if q else None
+                        msg["question_label"] = q.label if q else None
+                    if save["recorder"] is not None:   # 서버 전용 항목까지 저장하고, 웹에는 빼고 보낸다
+                        save["recorder"].write_result(msg)
+                        check_save()
+                    msg = for_web(msg)
                 # 질문 배정은 단계 메시지보다 먼저 보낸다 (READY와 같은 줄에서 배정)
                 for qmsg in (planner.on_update(u) if planner is not None else []):
                     emit(qmsg)
@@ -223,6 +330,9 @@ def run_pipeline(settings: Settings, emit, stop: threading.Event, source=None) -
         for line in source.lines():
             if stop.is_set():
                 return
+            if save["recorder"] is not None and isinstance(line, str) and settings.source == "serial":
+                save["recorder"].write_raw(line)   # 기기 줄 그대로 (PC시각<TAB>줄)
+                check_save()
             if isinstance(line, SourceStatus):   # 시리얼 입력원의 연결 상태
                 if line.kind in ("disconnected", "open_failed"):
                     last = batcher.flush()
@@ -256,6 +366,9 @@ def run_pipeline(settings: Settings, emit, stop: threading.Event, source=None) -
         emit({"type": "error", "retryable": False, "message": f"입력원 오류: {e}"})
         label = source.source if source else ("dummy" if settings.source == "dummy" else "hardware")
         emit(device_status(settings, label, connected=False, finished=True))
+    finally:
+        if save["recorder"] is not None:   # run_info.json에 끝난 시각과 개수를 남긴다
+            save["recorder"].close()
 
 
 # ----------------------------------------------------------
@@ -278,6 +391,7 @@ class Hub:
         self.baseline = None       # 마지막 baseline_result
         self.bpm = None            # 마지막 bpm_update (심박 추정값)
         self.question = None       # 마지막 question_update (현재 질문)
+        self.participant = None    # 마지막 participant_update (현재 별칭)
         self.samples = deque(maxlen=SAMPLE_HISTORY_BATCHES)   # 최근 sample_batch (그래프가 비지 않게)
         self.history_limit = history_limit
         self.lock = asyncio.Lock()
@@ -303,6 +417,8 @@ class Hub:
             self.bpm = msg
         elif t == "question_update":
             self.question = msg
+        elif t == "participant_update" and not msg.get("rejected"):
+            self.participant = msg
 
     async def publish(self, msg: dict):
         async with self.lock:
@@ -318,11 +434,19 @@ class Hub:
         """새 접속자에게 상태, 마지막 오류, 기준 측정, 마지막 단계, 최근 샘플, 지금까지의 시도 결과를
         보낸 뒤 방송 대상에 넣는다."""
         async with self.lock:
-            for msg in [self.status, self.error, self.baseline, self.question, self.phase, self.bpm,
+            for msg in [self.status, self.participant, self.error, self.baseline, self.question, self.phase, self.bpm,
                         *self.samples, *self.history]:
                 if msg is not None:
                     await ws.send_text(dumps(msg))
             self.clients.add(ws)
+
+    async def reply(self, ws: WebSocket, msg: dict):
+        """한 접속자에게만 보낸다 (방송과 겹치지 않게 같은 잠금을 쓴다)."""
+        async with self.lock:
+            try:
+                await ws.send_text(dumps(msg))
+            except Exception:
+                self.clients.discard(ws)
 
     def leave(self, ws: WebSocket):
         self.clients.discard(ws)
@@ -340,8 +464,10 @@ def create_app(settings: Settings = None) -> FastAPI:
         queue: asyncio.Queue = asyncio.Queue()
         stop = threading.Event()
         hub = Hub(settings.history_limit)
+        participant = ParticipantState()
         app.state.hub = hub
         app.state.settings = settings
+        app.state.participant = participant
 
         def emit(msg):  # 입력원 스레드 → 이벤트 루프
             loop.call_soon_threadsafe(queue.put_nowait, msg)
@@ -356,7 +482,7 @@ def create_app(settings: Settings = None) -> FastAPI:
                                        "message": f"메시지 전송 실패 ({msg.get('type')}): {e}"})
 
         pump_task = asyncio.create_task(pump())
-        worker = threading.Thread(target=run_pipeline, args=(settings, emit, stop),
+        worker = threading.Thread(target=run_pipeline, args=(settings, emit, stop, None, participant),
                                   name="truthpulse-source", daemon=True)
         worker.start()
         try:
@@ -375,7 +501,17 @@ def create_app(settings: Settings = None) -> FastAPI:
         await hub.join(ws)
         try:
             while True:
-                await ws.receive_text()   # 보기 전용: 받은 메시지는 쓰지 않는다
+                # 웹 → 서버는 참가자 별칭(set_participant)만 받는다. 그 밖의 메시지는 무시한다. 기기로는 보내지 않는다.
+                parsed = parse_client_message(await ws.receive_text())
+                if parsed is None:
+                    continue
+                kind, value = parsed
+                if kind == "set_participant":
+                    app.state.participant.set(value)
+                    await hub.publish({"type": "participant_update", "alias": value, "rejected": False})
+                else:   # 거부: 보낸 접속자에게만 이유와 지금 별칭을 알린다
+                    await hub.reply(ws, {"type": "participant_update", "alias": app.state.participant.get(),
+                                         "rejected": True, "message": value})
         except WebSocketDisconnect:
             pass
         finally:

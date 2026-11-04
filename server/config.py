@@ -21,6 +21,7 @@
 | MODEL_PATH        | training/out/model.json                        | logreg가 읽을 model.json |
 | ALLOW_EXPLORATORY_MODEL | (없음 = 끔)                              | 1/true면 탐색용 모델(exploratory)도 로드 |
 | RULE_CONFIG       | (없음 = rule.py 상수 3.0/3.0/1)                 | 규칙 판정기 임계값 JSON (training.evaluate_rule이 제안). 잘못되면 상수로 대체 |
+| SAVE              | (없음 = 끔)                                     | 1/true면 서버 기록 저장 (data/server/<날짜시각>_<입력원>/, server/storage.py) |
 | HISTORY_LIMIT     | 200                                            | 새 접속자에게 다시 보낼 시도 결과 최대 개수 |
 | SAMPLE_BATCH_SEC  | 0.25                                           | 그래프 샘플 묶음 간격 (0.2~0.5초) |
 | SAMPLE_DECIMATE   | 2                                              | 샘플 N개 중 1개만 보냄 (2 → 25Hz) |
@@ -40,6 +41,7 @@ SOURCES = ("dummy", "replay", "serial")
 DEFAULT_BAUD = 115200   # server/source/serial_source.py와 같은 값 (collector/record_session.py 1201행)
 JUDGES = ("rule", "logreg")
 DEFAULT_MODEL_PATH = os.path.join(REPO_ROOT, "training", "out", "model.json")
+DEFAULT_SAVE_ROOT = os.path.join(REPO_ROOT, "data", "server")
 
 
 @dataclass
@@ -67,6 +69,8 @@ class Settings:
     bpm_interval_sec: float = 1.0
     question_seed: Optional[int] = None
     question_bank: str = DEFAULT_QUESTION_BANK
+    save: bool = False                       # SAVE=1일 때만 기록 저장 (기본 꺼짐)
+    save_root: str = DEFAULT_SAVE_ROOT       # 환경 변수로 바꾸지 않는다 (테스트에서만 다른 임시 폴더)
 
     def __post_init__(self):
         if not 0.5 <= self.bpm_interval_sec <= 1.0:
@@ -130,6 +134,7 @@ def load_settings(env=None) -> Settings:
         bpm_interval_sec=_get(env, "BPM_INTERVAL_SEC", 1.0, float),
         question_seed=_get(env, "QUESTION_SEED", None, int),
         question_bank=_abs(_get(env, "QUESTION_BANK", DEFAULT_QUESTION_BANK)),
+        save=_get(env, "SAVE", False, _truthy),
     )
 
 

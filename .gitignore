@@ -5,6 +5,8 @@ CLAUDE.local.md
 
 # 실측 데이터 (참가자 생체신호, 올리지 않음)
 data/
+# 서버 기록 저장 (SAVE=1, server/storage.py). data/ 규칙에 이미 포함되지만 명시해 둔다
+data/server/
 
 # 파이썬, 노드
 .venv/

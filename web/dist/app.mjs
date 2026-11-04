@@ -1,5 +1,5 @@
 import { CHANNELS, STORAGE_KEY, demoSample, summarizeBaseline, summarizeDemo, recordsToCsv, parseRecords } from './core.mjs';
-import { UNTRAINED_BADGE, TOAST_EVENTS, bpmView, connectLive, judgeNotice, eventLabel, initialState, inputLabel, latestResult, normalize, noticeText, phaseDisplay, phaseStep, questionView, reduce, sessionLabel, signalHeading, streamStatusText, trialView, wsUrl } from './live.mjs';
+import { UNTRAINED_BADGE, TOAST_EVENTS, saveNotice, saveView, validateAlias, participantMessage, resultsToCsv, liveCsvFileName, TRAINING_EXCLUDED_INPUTS, bpmView, connectLive, judgeNotice, eventLabel, initialState, inputLabel, latestResult, normalize, noticeText, phaseDisplay, phaseStep, questionView, reduce, sessionLabel, signalHeading, streamStatusText, trialView, wsUrl } from './live.mjs';
 const $ = id => document.getElementById(id);
 const palette = { hr: '#4e8166', gsr: '#c68c58', fsr: '#9790c3' };
 const questionBank = ['지금 떠올린 숫자는 짝수인가요?', '오늘 아침을 먹었나요?', '지금 보고 있는 카드에 숫자 3이 있나요?', '최근 일주일 안에 영화를 봤나요?', '지금 선택한 색은 파란색인가요?'];
@@ -219,12 +219,13 @@ if (!storageAvailable) toast('기록 저장 공간을 사용할 수 없습니다
 // ---------- 기기 연동 모드 (Python 서버의 /ws, 보기 전용) ----------
 // /ws에 처음 연결되면 데모 공급(demoSample, summarizeDemo)을 멈추고 서버가 보내는 단계와 결과만 표시한다.
 // 연결할 수 없으면(예전 데모 서버 npm run dev) 기존 데모 모드를 그대로 쓴다.
-let connection = 'connecting', liveDrawPending = false, renderedResultKey = null;
+let connection = 'connecting', liveDrawPending = false, renderedResultKey = null, liveConn = null;
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
 function enterLiveMode() {
   clearInterval(demoTimer);
   phase = 'idle'; stream = [];
   for (const id of ['primary-action', 'cancel-action', 'question-fields', 'calibration-visual', 'progress-info', 'phase-progress', 'new-session', 'label-controls']) $(id).hidden = true;
+  $('live-participant').hidden = false; $('live-records').hidden = false; // 별칭 입력과 이번 접속의 결과 목록 (S17)
   $('settings-open').disabled = true;
   $('control-hint').textContent = '진행은 기기 버튼으로 합니다. 이 화면은 보기 전용입니다.';
   $('device-note-title').textContent = '기기 주도 · 보기 전용';
@@ -240,6 +241,8 @@ function enterLiveMode() {
 function renderLiveStatus() {
   const s = live.status;
   $('mode-pill-text').textContent = inputLabel(s) + (s?.finished ? ' · 끝남' : '');
+  const sv = saveView(s); // 서버 기록 저장 (SAVE=1)
+  $('save-pill').hidden = !sv.show; $('save-pill').className = `save-pill ${sv.kind}`; $('save-pill').title = sv.title; $('save-pill-text').textContent = sv.text;
   const [label, body] = noticeText(s);
   $('notice-text').replaceChildren(el('strong', '', label), ` ${body} 판정은 오락용이며 거짓의 증명이 아닙니다.`);
   $('signal-heading').textContent = signalHeading(s);
@@ -247,6 +250,7 @@ function renderLiveStatus() {
   const banner = $('connection-banner');
   if (connection !== 'open') { banner.hidden = false; banner.className = 'connection-banner warn'; banner.textContent = '서버와 연결이 끊겼습니다. 자동으로 다시 연결하는 중입니다…'; }
   else if (live.error) { banner.hidden = false; banner.className = 'connection-banner warn'; banner.textContent = live.error.message; }
+  else if (saveNotice(live.status)) { banner.hidden = false; banner.className = 'connection-banner warn'; banner.textContent = saveNotice(live.status); }
   else if (judgeNotice(live.status)) { banner.hidden = false; banner.className = 'connection-banner'; banner.textContent = judgeNotice(live.status); }
   else banner.hidden = true;
 }
@@ -259,7 +263,7 @@ function renderLivePhase() {
   steps.forEach((s, i) => { $(`step-${s}`).className = current === s ? 'current' : i < steps.indexOf(current) ? 'complete' : ''; });
   $('session-label').textContent = sessionLabel(live.session);
   renderLiveQuestion();
-  $('participant-display').textContent = live.phase?.trial ? `질문 ${live.phase.trial}` : '질문 전';
+  $('participant-display').textContent = `${live.participant ? `참가자 ${live.participant} · ` : ''}${live.phase?.trial ? `질문 ${live.phase.trial}` : '질문 전'}`;
   const bl = live.baseline;
   for (const k of ['gsr', 'fsr']) {
     const m = bl?.[k]?.mean, sd = bl?.[k]?.sd;
@@ -328,7 +332,39 @@ function renderLiveRecent() {
   if (!rows.length) { const box = el('div', 'empty-inline'); box.append(el('span', '', '⌁'), el('p', '', '첫 판정을 기다리고 있어요.')); $('recent-rounds').append(box); return; }
   rows.forEach(r => { const v = trialView(r); const row = el('div', 'record-row'); const info = el('span', '', v.questionText ? `${v.title} · ${v.questionText}` : v.title); info.append(el('small', '', `${v.sourceLabel}${v.badge ? ` · ${v.badge}` : ''}`)); row.append(info, el('span', '', v.decisionLabel)); $('recent-rounds').append(row); });
 }
-function renderLive() { renderLiveStatus(); renderLivePhase(); renderLiveValues(); renderLiveBpm(live.bpm); renderLiveResult(); renderLiveRecent(); scheduleLiveDraw(); }
+function renderLiveParticipant() {
+  const st = $('alias-status');
+  if (live.participantError) { st.textContent = live.participantError; st.className = 'field-note alias-error'; return; }
+  st.className = 'field-note';
+  st.textContent = live.participant ? `현재 별칭: ${live.participant} (이후 판정 결과에 붙습니다)` : '별칭만 입력하세요 (실명·연락처 금지). 한글·영문·숫자·공백·_- 1~20자.';
+}
+function renderLiveRecords() {
+  const rows = [...live.results].reverse();
+  $('live-records-count').textContent = `${rows.length}개`;
+  const input = live.status?.input;
+  $('live-records-note').textContent = `서버가 보낸 이번 접속의 결과입니다 (새로고침하면 서버가 보관한 최근 결과를 다시 받습니다). CSV는 이 브라우저에서 내려받기만 합니다.${TRAINING_EXCLUDED_INPUTS.has(input) ? ' 재생·더미 결과는 학습에 쓰지 않습니다.' : ''}`;
+  $('live-export-csv').disabled = !rows.length;
+  const body = $('live-records-body'); body.replaceChildren();
+  rows.forEach(r => {
+    const v = trialView(r); const tr = el('tr');
+    tr.append(el('td', '', v.title), el('td', '', r.participant_id ?? '—'), el('td', '', v.questionText ?? '—'), el('td', `decision-${v.decision}`, v.decisionLabel), el('td', '', v.sourceLabel));
+    body.append(tr);
+  });
+}
+function renderLive() { renderLiveStatus(); renderLivePhase(); renderLiveValues(); renderLiveBpm(live.bpm); renderLiveResult(); renderLiveRecent(); renderLiveParticipant(); renderLiveRecords(); scheduleLiveDraw(); }
+$('live-participant').addEventListener('submit', e => {
+  e.preventDefault();
+  const v = validateAlias($('alias-input').value);
+  if (!v.ok) { live.participantError = v.message; renderLiveParticipant(); return; }
+  if (!liveConn?.send(participantMessage(v.alias))) { live.participantError = '서버에 연결되지 않아 별칭을 보낼 수 없습니다.'; renderLiveParticipant(); return; }
+  live.participantError = null; $('alias-status').textContent = '별칭을 보냈습니다…';
+});
+$('live-export-csv').addEventListener('click', () => {
+  if (!live?.results.length) return;
+  const url = URL.createObjectURL(new Blob([resultsToCsv(live.results, live.status)], { type: 'text/csv;charset=utf-8' }));
+  const a = document.createElement('a'); a.href = url; a.download = liveCsvFileName(live.status); document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast(`결과 ${live.results.length}개를 CSV로 내보냈습니다.`);
+});
 function scheduleLiveDraw() {
   if (liveDrawPending) return;
   liveDrawPending = true;
@@ -358,7 +394,7 @@ function drawLiveCharts() {
   });
 }
 if (location.protocol.startsWith('http')) {
-  connectLive({
+  liveConn = connectLive({
     url: wsUrl(location),
     onState(state, info) {
       if (state === 'unavailable') return; // /ws가 없다: 데모 모드 유지

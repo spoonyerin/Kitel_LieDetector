@@ -4,7 +4,8 @@ import {
   UNTRAINED_BADGE, EXPLORATORY_BADGE, WINDOW_MS, batchToPoints, bpmView, connectLive, featureLabel, judgeBadge, judgeNotice,
   questionView, scoreText, initialState, inputLabel, isLive, latestResult,
   normalize, noticeText, phaseDisplay, phaseStep, reduce, sessionLabel, signalHeading, streamStatusText, trialView,
-  visibleWarnings, wsUrl,
+  visibleWarnings, wsUrl, saveView, saveNotice,
+  ALIAS_RULE, LIVE_CSV_FIELDS, liveCsvFileName, participantMessage, resultsToCsv, validateAlias,
 } from '../dist/live.mjs';
 
 const status = (input, extra = {}) => ({ type: 'device_status', input, live: false, connected: true, finished: false, ...extra });
@@ -304,4 +305,75 @@ test('close stops reconnecting', () => {
   const conn = connectLive({ url: 'ws://x/ws', WebSocketImpl: f.FakeWS, setTimer: f.setTimer, clearTimer: f.clearTimer });
   f.sockets[0].onopen(); conn.close(); f.sockets[0].onclose();
   assert.equal(f.timers.length, 0); assert.equal(f.sockets[0].closed, true);
+});
+
+test('server recording indicator (SAVE=1) and save failure notice', () => {
+  assert.deepEqual(saveView(null).show, false);
+  assert.equal(saveView(status('replay', { saving: false, save_dir: null, save_error: null })).show, false);
+  const on = saveView(status('serial', { saving: true, save_dir: 'data/server/20261104_150000_serial', save_error: null }));
+  assert.equal(on.show, true); assert.equal(on.text, '기록 중'); assert.equal(on.kind, 'on'); assert.match(on.title, /data\/server/);
+  assert.equal(saveView(status('dummy', { saving: true, finished: true })).text, '기록 저장됨');
+  const failed = status('serial', { saving: false, save_error: '기록 저장에 실패해 저장을 멈췄습니다 (x): disk full.' });
+  assert.equal(saveView(failed).text, '기록 안 됨'); assert.equal(saveView(failed).kind, 'error');
+  assert.match(saveNotice(failed), /실패/); assert.equal(saveNotice(status('serial')), null);
+});
+
+// ---------- 참가자 별칭과 이번 접속의 결과 (S17) ----------
+test('alias validation matches the server rule', () => {
+  for (const [raw, alias] of [['P01', 'P01'], ['김철수', '김철수'], [' team A_1-2 ', 'team A_1-2'], ['x'.repeat(20), 'x'.repeat(20)]]) {
+    assert.deepEqual(validateAlias(raw), { ok: true, alias, message: '' });
+  }
+  for (const raw of ['', '   ', 'x'.repeat(21), '<script>', 'P01;', 'a.b', 'ㄱㄴ', 'é', '😀', '=1+1', null, 123]) {
+    const v = validateAlias(raw); assert.equal(v.ok, false, String(raw)); assert.equal(v.message, ALIAS_RULE);
+  }
+  assert.deepEqual(participantMessage('P03'), { type: 'set_participant', alias: 'P03' });
+});
+
+test('participant_update sets the alias; a rejection keeps it and shows the reason', () => {
+  let s = initialState();
+  assert.equal(s.participant, null);
+  s = reduce(s, { type: 'participant_update', alias: 'P05', rejected: false });
+  assert.equal(s.participant, 'P05'); assert.equal(s.participantError, null);
+  s = reduce(s, { type: 'participant_update', alias: 'P05', rejected: true, message: ALIAS_RULE });
+  assert.equal(s.participant, 'P05'); assert.equal(s.participantError, ALIAS_RULE);
+  s = reduce(s, { type: 'participant_update', alias: 'P06', rejected: false });
+  assert.equal(s.participant, 'P06'); assert.equal(s.participantError, null);
+});
+
+test('results CSV has input, source and training marks, and escapes formulas like the demo export', () => {
+  const rows = [result({ participant_id: 'P01', question_id: 'Q02', question_text: '=SUM(A1)', features: { fsr_local_dz: -3.71, gsr_local_dz: null } }),
+    result({ trial_id: 2, decision: 'inconclusive', hold_code: 'CONTACT_EVENT:CONTACT_SHIFT', hold_reason: '손 위치가 바뀌었어요.', reasons: [] })];
+  const csv = resultsToCsv(rows, status('replay'));
+  assert.ok(csv.startsWith('\uFEFF'));
+  const lines = csv.slice(1).split('\r\n');
+  assert.equal(lines.length, 3);
+  assert.equal(lines[0], LIVE_CSV_FIELDS.map(f => `"${f}"`).join(','));
+  for (const k of ['input', 'source', 'training_excluded', 'participant_id']) assert.ok(LIVE_CSV_FIELDS.includes(k));
+  assert.match(lines[1], /^"replay","저장된 로그 재생","hardware","true","S02","1","P01","Q02",/);
+  assert.ok(lines[1].includes(`"'=SUM(A1)"`));            // 수식 문자 이스케이프 (core.mjs csvCell)
+  assert.ok(lines[1].includes(`"'-3.71",""`));             // 음수도 기존 csvCell 규칙대로 ' 접두, null 특징은 빈 칸
+  assert.match(lines[2], /"inconclusive","보류","","CONTACT_EVENT:CONTACT_SHIFT"/);
+  assert.match(resultsToCsv(rows, status('serial', { live: true })).split('\r\n')[1], /^"serial","실시간 기기","hardware","false",/);
+  assert.match(resultsToCsv([result({ source: 'dummy' })], status('dummy')).split('\r\n')[1], /^"dummy","합성 신호\(더미\)","dummy","true",/);
+  assert.equal(resultsToCsv([], status('serial')).slice(1).split('\r\n').length, 1);
+});
+
+test('CSV file names mark replay and dummy as not for training', () => {
+  const now = new Date(2026, 10, 4, 9, 5);
+  assert.equal(liveCsvFileName(status('serial'), now), 'truthpulse-serial-2026-11-04_0905.csv');
+  assert.equal(liveCsvFileName(status('replay'), now), 'truthpulse-replay-not-for-training-2026-11-04_0905.csv');
+  assert.equal(liveCsvFileName(status('dummy'), now), 'truthpulse-dummy-not-for-training-2026-11-04_0905.csv');
+  assert.equal(liveCsvFileName(null, now), 'truthpulse-unknown-2026-11-04_0905.csv');
+});
+
+test('send() only works while the socket is open', () => {
+  const f = fakes(); const sent = [];
+  f.FakeWS.prototype.send = function (text) { sent.push(JSON.parse(text)); };
+  const conn = connectLive({ url: 'ws://x/ws', WebSocketImpl: f.FakeWS, setTimer: f.setTimer, clearTimer: f.clearTimer });
+  assert.equal(conn.send(participantMessage('P01')), false);   // 아직 열리지 않음
+  f.sockets[0].readyState = 1; f.sockets[0].onopen();
+  assert.equal(conn.send(participantMessage('P01')), true);
+  assert.deepEqual(sent, [{ type: 'set_participant', alias: 'P01' }]);
+  f.sockets[0].onclose();
+  assert.equal(conn.send(participantMessage('P02')), false);
 });
