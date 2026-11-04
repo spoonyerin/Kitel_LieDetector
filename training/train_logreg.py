@@ -180,7 +180,10 @@ def filter_settings():
 # 학습 전체
 # ----------------------------------------------------------
 def train(rows, out_path, allow_small=False, log=print):
-    """반환: (model.json을 썼는지, 결과 dict). rows는 build_dataset의 행."""
+    """반환: (model.json을 썼는지, 결과 dict). rows는 build_dataset의 행.
+
+    out_path가 비어 있으면 평가만 하고 파일을 쓰지 않는다 (training/report.py에서 사용).
+    """
     if not rows:
         log("학습할 데이터가 없습니다. (라벨이 확정된 본 질문 시도가 0건)")
         return False, {"reason": "no_data"}
@@ -256,11 +259,15 @@ def train(rows, out_path, allow_small=False, log=print):
                      "n_lie": int(np.sum(y == 1)), "cv": scheme,
                      "cv_metrics": {k: {kk: vv for kk, vv in v.items()} for k, v in res.items()}},
     }
+    result["model"] = payload
+    result["exportable"] = True
+    if not out_path:   # 리포트용 평가 (파일을 쓰지 않는다)
+        log("model.json 내보내기 조건을 만족합니다 (이번 실행은 파일을 쓰지 않음)")
+        return False, result
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=1)
     log(f"model.json → {os.path.abspath(out_path)}" + (" (탐색용, exploratory=true)" if small else ""))
-    result["model"] = payload
     return True, result
 
 

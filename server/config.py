@@ -20,6 +20,7 @@
 | JUDGE             | rule                                           | 판정기 rule 또는 logreg (logreg를 쓸 수 없으면 rule로 대체) |
 | MODEL_PATH        | training/out/model.json                        | logreg가 읽을 model.json |
 | ALLOW_EXPLORATORY_MODEL | (없음 = 끔)                              | 1/true면 탐색용 모델(exploratory)도 로드 |
+| RULE_CONFIG       | (없음 = rule.py 상수 3.0/3.0/1)                 | 규칙 판정기 임계값 JSON (training.evaluate_rule이 제안). 잘못되면 상수로 대체 |
 | HISTORY_LIMIT     | 200                                            | 새 접속자에게 다시 보낼 시도 결과 최대 개수 |
 | SAMPLE_BATCH_SEC  | 0.25                                           | 그래프 샘플 묶음 간격 (0.2~0.5초) |
 | SAMPLE_DECIMATE   | 2                                              | 샘플 N개 중 1개만 보냄 (2 → 25Hz) |
@@ -54,6 +55,7 @@ class Settings:
     judge: str = "rule"
     model_path: str = DEFAULT_MODEL_PATH
     allow_exploratory_model: bool = False
+    rule_config: Optional[str] = None
     history_limit: int = 200
     sample_batch_sec: float = 0.25
     sample_decimate: int = 2
@@ -116,6 +118,7 @@ def load_settings(env=None) -> Settings:
         judge=_get(env, "JUDGE", "rule").lower(),
         model_path=_abs(_get(env, "MODEL_PATH", DEFAULT_MODEL_PATH)),
         allow_exploratory_model=_get(env, "ALLOW_EXPLORATORY_MODEL", False, _truthy),
+        rule_config=_abs(_get(env, "RULE_CONFIG", "")) if _get(env, "RULE_CONFIG", "") else None,
         history_limit=_get(env, "HISTORY_LIMIT", 200, int),
         sample_batch_sec=_get(env, "SAMPLE_BATCH_SEC", 0.25, float),
         sample_decimate=_get(env, "SAMPLE_DECIMATE", 2, int),
