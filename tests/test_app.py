@@ -45,8 +45,9 @@ def test_settings_reject_bad_values():
     assert load_settings({"SOURCE": "serial", "SERIAL_PORT": "COM6"}).source == "serial"
     with pytest.raises(ValueError):
         load_settings({"SOURCE": "camera"})
+    assert load_settings({"JUDGE": "logreg"}).judge == "logreg"   # S13부터 허용
     with pytest.raises(ValueError):
-        load_settings({"JUDGE": "logreg"})
+        load_settings({"JUDGE": "svm"})
     with pytest.raises(ValueError):
         load_settings({"REPLAY_SPEED": "fast"})
 

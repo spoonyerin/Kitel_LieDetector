@@ -75,7 +75,8 @@ Kitel_LieDetector/
 │  │  └─ bpm.py           ← IR 심박 추정 (화면 표시용, 판정에 안 씀)
 │  └─ judges/
 │     ├─ base.py          ← Contribution, Verdict, Judge, 라벨 키 거부
-│     └─ rule.py          ← RuleJudge
+│     ├─ rule.py          ← RuleJudge
+│     └─ logreg.py        ← LogregJudge (model.json), 판정기 선택과 대체 (S13)
 ├─ web/                   ← 기존 Truthpulse_Game 화면
 │  ├─ dist/               ← 정적 화면 (빌드 없음, 소스이자 배포 루트)
 │  │  ├─ index.html, styles.css, core.mjs (기존 데모)
@@ -96,7 +97,7 @@ Kitel_LieDetector/
    └─ dummy/              ← 더미 (현재 서버는 아무것도 저장하지 않으므로 쓰지 않는다)
 ```
 
-아직 없는 것: `server/storage.py`(기록 저장, I6), `server/judges/logreg.py`(M6, model.json을 읽는 판정기), `server/judges/dummy.py`(RuleJudge를 먼저 만들어 필요 없어짐, 6절).
+아직 없는 것: `server/storage.py`(기록 저장, I6). 실제 `model.json`(라벨 확정 데이터가 모이면 S12 파이프라인으로 만든다), `server/judges/dummy.py`(RuleJudge를 먼저 만들어 필요 없어짐, 6절).
 
 `web/server.mjs`는 예전 웹 프로토타입을 혼자 띄우던 개발용 정적 서버다(`npm run dev`, 포트 4173, 가상 신호만 사용). `/ws`가 없으므로 웹은 기존 데모 모드로 동작한다. 기기 연동은 Python 서버(`server/app.py`)가 `web/dist`를 같은 포트로 서빙할 때만 동작한다.
 
@@ -126,7 +127,7 @@ Python 서버가 `web/dist`를 같이 서빙한다 (같은 포트라 CORS 설정
 | 재생 (저장된 로그) | `$env:SOURCE="replay"; $env:REPLAY_RUN="data\real\experiments\run_20261103_161545"; $env:REPLAY_SPEED="4"; .venv\Scripts\python.exe -m uvicorn server.app:app --port 8000` | 저장된 로그 재생 |
 | 시리얼 (기기) | `$env:SOURCE="serial"; $env:SERIAL_PORT="COM6"; .venv\Scripts\python.exe -m uvicorn server.app:app --port 8000` | 실시간 기기 / 기기 연결됨 · 신호 대기 / 기기 연결 끊김 |
 
-- 환경 변수 전체 목록과 기본값은 `server/config.py` 상단 표에 있다. 주요 값: `REPLAY_MAX_WAIT`(세션 사이 공백 단축, 기본 2초), `DUMMY_TRIALS`, `DUMMY_PATTERNS`(calm, reactive, poor), `SERIAL_BAUD`(기본 115200, `collector/record_session.py`의 `--baud` 기본값), `SERIAL_RETRY_SEC`(1~2초), `SERIAL_IDLE_SEC`(기본 5초), `SAMPLE_BATCH_SEC`(0.2~0.5초), `BPM_INTERVAL_SEC`(0.5~1초), `QUESTION_SEED`(질문 순서 시드, 없으면 서버 시작마다 무작위이며 서버 콘솔에 찍힌다), `QUESTION_BANK`(기본 `collector/question_bank.csv`).
+- 환경 변수 전체 목록과 기본값은 `server/config.py` 상단 표에 있다. 주요 값: `REPLAY_MAX_WAIT`(세션 사이 공백 단축, 기본 2초), `DUMMY_TRIALS`, `DUMMY_PATTERNS`(calm, reactive, poor), `SERIAL_BAUD`(기본 115200, `collector/record_session.py`의 `--baud` 기본값), `SERIAL_RETRY_SEC`(1~2초), `SERIAL_IDLE_SEC`(기본 5초), `SAMPLE_BATCH_SEC`(0.2~0.5초), `BPM_INTERVAL_SEC`(0.5~1초), `QUESTION_SEED`(질문 순서 시드, 없으면 서버 시작마다 무작위이며 서버 콘솔에 찍힌다), `QUESTION_BANK`(기본 `collector/question_bank.csv`), `JUDGE`(rule 또는 logreg, 기본 rule), `MODEL_PATH`(기본 `training/out/model.json`), `ALLOW_EXPLORATORY_MODEL`(1이면 탐색용 모델도 로드).
 - PowerShell의 `$env:` 값은 그 창을 닫을 때까지 남는다. 다른 입력원으로 바꿀 때는 값을 다시 지정하거나 `Remove-Item Env:SOURCE`로 지운다.
 - 재생과 더미는 화면에 "실시간"으로 표시하지 않는다. serial은 기기 줄을 실제로 받는 동안만 `live=true`("실시간 기기")다.
 - 서버는 파일을 쓰지 않는다. `data/dummy/`도 만들지 않는다 (기록 저장은 미구현, I6).
@@ -164,7 +165,7 @@ Python 서버가 `web/dist`를 같이 서빙한다 (같은 포트라 CORS 설정
 cd web; npm test
 ```
 
-2026-11-04 기준 pytest 253개, npm test 26개 통과. 실측 로그가 없으면 해당 테스트는 건너뛴다. 서버 테스트는 127.0.0.1의 빈 포트에 임시 uvicorn을 띄우고, 시리얼 테스트는 가짜 시리얼만 써서 실제 COM 포트를 열지 않는다.
+2026-11-04 기준 pytest 274개, npm test 30개 통과. 실측 로그가 없으면 해당 테스트는 건너뛴다. 서버 테스트는 127.0.0.1의 빈 포트에 임시 uvicorn을 띄우고, 시리얼 테스트는 가짜 시리얼만 써서 실제 COM 포트를 열지 않는다.
 
 수집기 테스트는 따로 실행한다 (현재 폴더 기준으로 `experiments/`를 찾으므로 11절 I8 참고):
 
@@ -268,13 +269,13 @@ data/real/experiments/run_<날짜시각>/
 
 | type | 내용 |
 |---|---|
-| `device_status` | `input`(dummy/replay/serial), `input_label`, `live`, `source`(dummy/hardware), `connected`, `finished`, `message`, `port`, `replay_run` |
+| `device_status` | `input`(dummy/replay/serial), `input_label`, `live`, `source`(dummy/hardware), `connected`, `finished`, `message`, `port`, `replay_run`, `judge`(`name`, `requested`, `version`, `trained`, `exploratory`, `fallback_reason`) |
 | `phase_update` | `phase`(단계 변화) 또는 `event`(손 접촉, 접촉 문제, 무효, 세션 시작/종료, 재부팅), `trial`, `esp_session`, `session_index`, `session_active` |
 | `sample_batch` | 그래프용 원시 샘플. 열 단위 배열(`time_ms, fsr, gsr, ir, red, phase, trial, seq, contact`), 2개 중 1개(25Hz), 0.25초마다, 묶음당 최대 100개(`dropped`에 버린 수) |
 | `baseline_result` | 기준 측정 평균/표준편차, 상태, 경고, 표준편차 하한 적용 여부 |
 | `bpm_update` | 심박 추정값 `bpm`(없으면 null), `estimate: true`, `reason`, `reason_text`, 1초마다 |
 | `question_update` | 시도에 배정한 질문: `session_index`, `trial`, `question_id`, `question_no`, `question_text`, `question_label`(연습 질문 / 본 질문 n/5 / 추가 질문 n), `role`, `exhausted`, `order_note`, `seed`. READY START에 배정하고 단계 메시지보다 먼저 보낸다. 세션이 끝나면 `question_text=null`로 비운다. 정답 라벨 키는 없다 (`label` 대신 `question_label`) |
-| `trial_result` | PRD 9절 형식 + `judge_note`, `disclaimer`, `hold_code`, `device_status`, `question_id`, `question_text`, `question_label`. 서버 전용 항목(`server_only`, 예: 알 수 없는 경고 비트)은 빼고 보낸다 |
+| `trial_result` | PRD 9절 형식 + `judge_note`, `disclaimer`, `hold_code`, `device_status`, `question_id`, `question_text`, `question_label`. 학습된 판정기면 `score`(거짓 점수)와 `judge.exploratory`가 들어간다. 서버 전용 항목(`server_only`, 예: 알 수 없는 경고 비트)은 빼고 보낸다 |
 | `error` | `retryable`, 사용자용 `message` |
 
 웹 → 서버: **미구현.** 받은 메시지는 모두 무시한다 (보기 전용). 예전 설계의 `set_mode`, `new_session`은 만들지 않았다. 입력원은 서버 환경 변수로만 정한다.
@@ -329,7 +330,16 @@ class Judge(Protocol):
    - 임계값은 설정 파일이 아니라 코드 상수다 (M5의 "설정 파일"은 미구현).
 3. `LogregJudge`: **미구현 (M6).** `server/models/model.json`(특징 순서, 정규화 값, 계수, 절편, 임계값, 필터 설정, 버전)을 읽게 한다. 기획서대로 로지스틱 회귀.
 
-판정기 선택: `JUDGE=rule` (현재 rule만 허용).
+판정기 선택: `JUDGE=rule|logreg`, `MODEL_PATH`, `ALLOW_EXPLORATORY_MODEL` (기본 rule).
+
+4. `LogregJudge` (`server/judges/logreg.py`, **구현됨 S13**, 실제 model.json은 아직 없음):
+   - model.json(S12 형식 `truthpulse-logreg`, 버전 0.1.x)의 특징 순서, 결측 대체(중앙값), 정규화, 클리핑, 계수, 절편, 임계값을 그대로 적용한다. 점수 = 1/(1+exp(−(Σ 계수×z + 절편))). model.json만으로 계산한 점수가 학습 코드(`predict_from_model`)와 같음을 테스트로 확인한다.
+   - `score`는 0~1의 **거짓 점수**다. 보정을 평가하기 전이므로 화면과 안내 문구에 다른 이름을 쓰지 않는다. `trained=True`, `version`=모델 버전, 탐색용이면 `exploratory=True`.
+   - 판정기에는 전체 특징(국소 dz, 기기 dz, S11 23개)이 넘어간다 (`needs_extended_features`). 규칙 판정기는 지금처럼 4개만 받는다.
+   - 품질 보류는 판정기보다 먼저 적용된다. 특징의 절반 넘게 비어 있으면 `MODEL_FEATURES_MISSING`으로 보류한다. 라벨 키 입력은 거부한다.
+   - 이유: 기여도(계수×표준화 값)가 판정 방향으로 0.25 이상인 특징만 큰 순서로 최대 3개, 특징 종류별 쉬운 문장 (예: "답변 중 손가락 압력의 변동이 평소보다 컸습니다 (기준 측정과 비교). 거짓 점수를 높인 요인입니다."). "평소"는 학습 데이터의 평균이다. 그런 특징이 없으면 "뚜렷하게 한쪽으로 기여한 특징이 없습니다…". 0.25와 3개는 임시값.
+   - `judge_note`: 학습 참가자 수, 시도 수(진실/거짓), 참가자 분리 검증 균형 정확도(로지스틱 회귀, 규칙 판정기, 항상 다수).
+   - 대체: `JUDGE=logreg`인데 model.json이 없거나, JSON이 깨졌거나, 형식·버전·길이·표준편차가 맞지 않거나, 탐색용인데 허용하지 않았으면 서버를 멈추지 않고 RuleJudge로 대신한다. 이유는 콘솔 경고와 모든 `device_status.judge.fallback_reason`으로 알리고, 웹은 위쪽 띠에 보여 준다.
 
 ## 7. 전처리와 특징 추출
 
@@ -450,6 +460,7 @@ class Judge(Protocol):
 - 재생·더미 화면에서는 "실시간"을 표시하지 않고, 손 올리기 단계에서는 "측정은 저장된 로그를 따라갑니다."(더미: "측정은 합성 신호를 따라갑니다.")로 바꾼다.
 - 연결이 끊기면 주황색 띠를 띄우고 1초부터 최대 5초 간격으로 자동 재연결한다. 재연결하면 서버가 상태와 기록을 다시 보내고, 같은 결과는 한 번만 표시한다.
 - 질문 문장: READY 단계에서는 다음 질문을 흐리게 미리 보여 주고(진행자 준비용), QUESTION 단계에서 크게, 그 시도의 답변·분석·결과 단계에서는 흐리게, 손 올리기·기준 측정·세션 종료와 다른 시도에서는 숨긴다. 안내 문구: 재생 "기록 당시 실제로 물은 질문과 다를 수 있습니다", 기기·더미 "질문 순서는 서버가 정합니다. 진행자는 화면의 질문을 읽어 주세요." 결과 카드와 최근 판정에도 질문 문장을 보여 준다.
+- 판정기 배지: `trained=false`면 "모델 미학습(데모)", 학습된 모델이면 "학습된 모델 v…", 탐색용이면 "탐색용 모델(검증 부족)". 점수가 있으면 "거짓 점수 0.xx"로 표시한다 (다른 이름을 쓰지 않음을 테스트로 확인). 학습 모델의 막대는 기여가 큰 특징 5개(+ 거짓 쪽, − 진실 쪽). 판정기 대체 이유는 위쪽 띠에 보여 준다.
 - 기기 연동 모드의 결과는 브라우저 기록 페이지에 저장하지 않는다 (기록/내보내기는 데모 기록만).
 - 브라우저 화면 확인은 사람이 한다 (자동 브라우저 테스트 없음).
 
@@ -495,6 +506,7 @@ class Judge(Protocol):
 | 판정기, 이유 | 임계값 경계, 보류, 넘은 센서만 언급, 쉬운 보류 문장, 실측 161545 회귀 | `tests/test_judges.py`, `tests/test_reasons.py` |
 | 심박 | 합성 50~150 BPM ±2, 신호 없음/약함/불규칙은 None, 판정 미사용, 실측 범위 | `tests/test_bpm.py` |
 | 전처리, 전체 특징 | 인과성(뒤쪽 샘플을 바꿔도 앞 출력 동일), filtfilt 미사용, 합성 신호로 각 특징 값, 평평/기준 없음/짧은 답변 nan, 클리핑, 결정성, 라벨 비참조, RuleJudge 입력 불변, 실측 nan 비율, CSV 출력 보호 | `tests/test_signal.py`, `tests/test_features_full.py` |
+| 학습된 판정기 | model.json 점수 = 학습 코드, 결측 대체, 보류·라벨 키 거부, 기여 특징만 말하는 쉬운 문장, 형식·버전 오류 시 규칙 판정기 대체, 탐색용 허용, 서버가 logreg로 켜짐/대체, 규칙 결과 형식 불변, CLI | `tests/test_logreg_judge.py` |
 | 학습 | 라벨 규칙과 제외 사유, 서버와 같은 특징, 라벨을 바꿔도 특징 동일, 더미 거부(폴더·SOURCE·행), 예전 형식, 0건 정상 종료, 참가자 분리, 테스트 폴드 비노출, 5명 미만 경고, 기준 미달 시 내보내기 거부, model.json 내용과 서빙 일치, 출력 보호, 결정성 | `tests/test_training.py` |
 | 질문 | 은행 라벨 열 무시, 순서·시드, 배정 규칙(질문 전/후 무효), 세션·재부팅, 소진, 실측 161545, 판정 미사용 | `tests/test_questions.py` |
 | 서버 | 임시 uvicorn + websockets: 방송, 새 접속자 재전송, 샘플·심박 전송 간격, 재생 결과, 오류 | `tests/test_app.py`, `tests/test_stream.py` |
@@ -540,10 +552,12 @@ class Judge(Protocol):
 - [x] **M2-S9** 게임 모드 질문 문장 표시 (서버가 정한 순서, `QUESTION_SEED`, 라벨 없음, `question_id` 채움) (2026-11-04)
 - [x] **M2-S10** 원시 샘플 품질 검사 연결 (`check_segment` → 보류 `RAW_*` / 경고, 쉬운 문장, 실측 판정 변화 없음) (2026-11-04)
 - [x] **S11** 학습용 전체 특징 추출 (인과적 전처리, 23개 특징, `features` CSV, 판정 미사용, 실측 판정 변화 없음) (2026-11-04) — M6 준비
+- [x] **S12** 학습 파이프라인 (확정 라벨 데이터셋, 참가자 분리 검증, 기준 모델 비교, model.json 안전장치) (2026-11-04)
+- [x] **S13** `LogregJudge`와 `JUDGE=logreg` 전환 (model.json 검사, 규칙 판정기 대체, 거짓 점수·기여 이유·배지) (2026-11-04)
 - [x] **M3** FastAPI + WebSocket, 웹 연결(보기 전용), 단계 표시, 배지 (2026-11-04, M2의 S4·S5로 진행)
 - [ ] **M4** 펌웨어 소스 확인 후 기기 결과와 서버 판정 일치 방안 결정, I6 결정
 - [ ] **M5** `RuleJudge` (시연 예비안), 임계값 설정 파일 — RuleJudge는 M2-S3에서 구현. 임계값은 코드 상수이며 설정 파일과 라벨 검증은 남음
-- [ ] **M6** 학습 파이프라인(참가자 분리 검증), `model.json`, `LogregJudge` 교체 — 파이프라인과 model.json 내보내기는 S12에서 구현(2026-11-04). 라벨 확정 데이터 0건이라 학습은 아직 못 함. `LogregJudge`는 남음
+- [ ] **M6** 학습 파이프라인(참가자 분리 검증), `model.json`, `LogregJudge` 교체 — 파이프라인과 model.json 내보내기는 S12, `LogregJudge`와 `JUDGE=logreg` 전환은 S13에서 구현(2026-11-04). 라벨 확정 데이터 0건이라 학습과 실제 교체는 아직 못 함
 - [ ] **M7** 통합 테스트, 리허설, (선택) ESP32 이식과 저주파 피드백
 
 M1의 수집은 개발과 병행해서 계속한다. M6은 라벨이 확정된 실측 데이터가 충분히 모인 뒤에 한다 (제안: 참가자 8~10명 이상, 확정된 질문 100~200개 이상).
@@ -554,7 +568,7 @@ M1의 수집은 개발과 병행해서 계속한다. M6은 라벨이 확정된 �
 
 1. **라벨 데이터 수집 (M1):** 짧은 실제 세션으로 본 질문 라벨(`condition`, `confirmed`)이 남는지 확인한 뒤 본격 수집. 수집기와 서버는 같은 포트를 동시에 쓸 수 없으므로 수집은 수집기로 한다.
 2. **서버 기록 저장 (I6):** 저장 위치와 형식 결정 후 `server/storage.py` (모든 기록에 `source`).
-3. **로지스틱 회귀 (M6):** 파이프라인은 S12 완료 (`python -m training.train_logreg`). 라벨 데이터가 모이면 실행하고, 기준을 넘으면 `LogregJudge`를 만든다.
+3. **로지스틱 회귀 (M6):** 파이프라인(S12)과 판정기(S13) 완료. 라벨 데이터가 모이면 `python -m training.train_logreg`를 실행하고, model.json이 만들어지면 `JUDGE=logreg`로 바꿔 쓴다. 거짓 점수의 보정 평가는 아직 없다.
 4. **RuleJudge 임계값 검증:** 라벨 데이터로 3.0σ와 국소 dz의 타당성을 평가하고 설정 파일로 옮긴다 (M5).
 5. **심박 추정 검증 (I14):** 다른 측정기와 비교, 그 뒤에 `hr_delta` 특징 검토.
 6. **블루투스 SPP:** ESP32 Bluetooth 시리얼(SPP)로 연결하면 Windows에 COM 포트로 잡히므로 `SOURCE=serial`을 그대로 쓸 수 있을 것으로 예상한다 (미확인). DTR/RTS, 재연결, 지연을 실기기로 확인한다.

@@ -17,7 +17,9 @@
 | DUMMY_PATTERNS    | calm,reactive,calm,poor                        | 더미 패턴 (시도마다 차례로) |
 | DUMMY_SEED        | 0                                              | 더미 난수 시드 |
 | DUMMY_SPEED       | 1.0                                            | 더미 배속 |
-| JUDGE             | rule                                           | 판정기 (현재 rule만) |
+| JUDGE             | rule                                           | 판정기 rule 또는 logreg (logreg를 쓸 수 없으면 rule로 대체) |
+| MODEL_PATH        | training/out/model.json                        | logreg가 읽을 model.json |
+| ALLOW_EXPLORATORY_MODEL | (없음 = 끔)                              | 1/true면 탐색용 모델(exploratory)도 로드 |
 | HISTORY_LIMIT     | 200                                            | 새 접속자에게 다시 보낼 시도 결과 최대 개수 |
 | SAMPLE_BATCH_SEC  | 0.25                                           | 그래프 샘플 묶음 간격 (0.2~0.5초) |
 | SAMPLE_DECIMATE   | 2                                              | 샘플 N개 중 1개만 보냄 (2 → 25Hz) |
@@ -35,7 +37,8 @@ DEFAULT_QUESTION_BANK = os.path.join(REPO_ROOT, "collector", "question_bank.csv"
 
 SOURCES = ("dummy", "replay", "serial")
 DEFAULT_BAUD = 115200   # server/source/serial_source.py와 같은 값 (collector/record_session.py 1201행)
-JUDGES = ("rule",)
+JUDGES = ("rule", "logreg")
+DEFAULT_MODEL_PATH = os.path.join(REPO_ROOT, "training", "out", "model.json")
 
 
 @dataclass
@@ -49,6 +52,8 @@ class Settings:
     dummy_seed: int = 0
     dummy_speed: float = 1.0
     judge: str = "rule"
+    model_path: str = DEFAULT_MODEL_PATH
+    allow_exploratory_model: bool = False
     history_limit: int = 200
     sample_batch_sec: float = 0.25
     sample_decimate: int = 2
@@ -109,6 +114,8 @@ def load_settings(env=None) -> Settings:
         dummy_seed=_get(env, "DUMMY_SEED", 0, int),
         dummy_speed=_get(env, "DUMMY_SPEED", 1.0, float),
         judge=_get(env, "JUDGE", "rule").lower(),
+        model_path=_abs(_get(env, "MODEL_PATH", DEFAULT_MODEL_PATH)),
+        allow_exploratory_model=_get(env, "ALLOW_EXPLORATORY_MODEL", False, _truthy),
         history_limit=_get(env, "HISTORY_LIMIT", 200, int),
         sample_batch_sec=_get(env, "SAMPLE_BATCH_SEC", 0.25, float),
         sample_decimate=_get(env, "SAMPLE_DECIMATE", 2, int),
@@ -121,6 +128,15 @@ def load_settings(env=None) -> Settings:
         question_seed=_get(env, "QUESTION_SEED", None, int),
         question_bank=_abs(_get(env, "QUESTION_BANK", DEFAULT_QUESTION_BANK)),
     )
+
+
+def _truthy(value: str) -> bool:
+    v = value.strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(value)
 
 
 def _abs(path: str) -> str:

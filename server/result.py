@@ -30,12 +30,27 @@ def for_web(result: dict) -> dict:
     return {k: v for k, v in result.items() if k != "server_only"}
 
 
+def _judge_info(verdict, judge) -> dict:
+    info = {"name": verdict.judge_name, "version": verdict.judge_version, "trained": verdict.trained}
+    if getattr(judge, "exploratory", None) is not None:      # 학습된 판정기만 (규칙 판정기 결과 형식은 그대로)
+        info["exploratory"] = judge.exploratory
+    return info
+
+
+def _highlighted(judge, verdict, c) -> bool:
+    """화면에서 강조할 기여: 규칙은 임계값을 넘은 센서, 학습 모델은 이유로 말한 주요 기여."""
+    if hasattr(judge, "is_highlighted"):
+        return judge.is_highlighted(verdict, c)
+    return abs(c.value) >= judge.thresholds[c.sensor]
+
+
 def judge_trial(trial, source: str, judge: RuleJudge = None,
                 session_id: Optional[str] = None, participant_id: Optional[str] = None,
                 question_id: Optional[str] = None, baseline_segment=None) -> dict:
     """trial: server.pipeline.tracker.TrialSegment, baseline_segment: 그 시도가 쓴 BaselineSegment (없으면 None).
 
-    판정기에는 기존 특징(국소 dz와 기기 dz)만 넘긴다. 전체 특징(S11, 학습용)은 결과의 features에만 더한다.
+    규칙 판정기에는 기존 특징(국소 dz와 기기 dz)만 넘긴다. 학습된 판정기(needs_extended_features)에는
+    전체 특징(S11)까지 넘긴다. 품질 보류는 어느 판정기든 먼저 적용된다 (quality.ok가 거짓이면 판정기가 보류).
     """
     if source not in ("dummy", "hardware"):
         raise ValueError("source는 dummy 또는 hardware여야 한다")
@@ -47,9 +62,11 @@ def judge_trial(trial, source: str, judge: RuleJudge = None,
     if summary_values:
         baseline = {k: summary_values.get(k) for k in ("bl_n", "bl_fsr_mean", "bl_fsr_sd",
                                                       "bl_gsr_mean", "bl_gsr_sd", "bl_ir_mean")}
-    verdict = judge.judge(feat.features, baseline, quality.as_dict())
     ext_values, ext_info = extended_features(
         trial.samples, baseline_segment.samples if baseline_segment is not None else None)
+    judge_input = ({**feat.features, **ext_values} if getattr(judge, "needs_extended_features", False)
+                   else feat.features)
+    verdict = judge.judge(judge_input, baseline, quality.as_dict())
     reasons = make_reasons(verdict, judge)
     shown_warnings, server_warnings = split_warnings(quality.warnings)
     return {
@@ -63,7 +80,7 @@ def judge_trial(trial, source: str, judge: RuleJudge = None,
         "device_status": trial.status,
         "decision": verdict.decision,
         "score": verdict.score,
-        "judge": {"name": verdict.judge_name, "version": verdict.judge_version, "trained": verdict.trained},
+        "judge": _judge_info(verdict, judge),
         "judge_note": judge.note,
         "quality": {"ok": quality.ok, "flags": quality.flags, "warnings": shown_warnings,
                     # 화면에 작게 보여 줄 쉬운 문장 (같은 문장은 한 번만)
@@ -76,7 +93,7 @@ def judge_trial(trial, source: str, judge: RuleJudge = None,
         "contributions": [
             {"sensor": c.sensor, "feature": c.feature, "value": c.value, "contribution": c.contribution,
              "direction": "up" if c.value > 0 else "down",
-             "over_threshold": abs(c.value) >= judge.thresholds[c.sensor]}
+             "over_threshold": _highlighted(judge, verdict, c)}
             for c in verdict.contributions
         ],
         "reasons": reasons,

@@ -47,6 +47,8 @@ def hold_text(code: str) -> str:
         return f"기준 측정 값이 없어서 {NOT_JUDGED}"
     if kind == "FEATURE_NAN":
         return f"신호 값을 계산하지 못해서 {NOT_JUDGED}"
+    if kind == "MODEL_FEATURES_MISSING":
+        return f"학습된 판정기에 필요한 신호 값이 많이 비어 있어서 {NOT_JUDGED}"
     if kind == "THRESHOLD_UNSET":
         return f"판정 기준이 아직 정해지지 않아서 {NOT_JUDGED}"
     if kind in RAW_HOLD_KR:
@@ -108,6 +110,8 @@ def make_reasons(verdict, judge) -> list:
     """verdict: Verdict, judge: RuleJudge (thresholds, exceeded()를 쓴다)."""
     if verdict.decision == "inconclusive":
         return [hold_text(verdict.hold_reason)]
+    if hasattr(judge, "reasons"):      # 학습된 판정기는 실제로 기여한 특징으로 자기 문장을 만든다
+        return judge.reasons(verdict)
     over = judge.exceeded(verdict)
     if not over:
         th = judge.thresholds

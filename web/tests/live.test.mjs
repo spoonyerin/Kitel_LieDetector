@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  UNTRAINED_BADGE, WINDOW_MS, batchToPoints, bpmView, connectLive, questionView, initialState, inputLabel, isLive, latestResult,
+  UNTRAINED_BADGE, EXPLORATORY_BADGE, WINDOW_MS, batchToPoints, bpmView, connectLive, featureLabel, judgeBadge, judgeNotice,
+  questionView, scoreText, initialState, inputLabel, isLive, latestResult,
   normalize, noticeText, phaseDisplay, phaseStep, reduce, sessionLabel, signalHeading, streamStatusText, trialView,
   visibleWarnings, wsUrl,
 } from '../dist/live.mjs';
@@ -84,7 +85,8 @@ test('held trial shows the hold reason and the badge stays', () => {
   assert.equal(v.decisionLabel, '보류'); assert.equal(v.kind, 'poor');
   assert.equal(v.holdReason, '손 위치가 바뀌어 이 답변은 측정에서 제외했어요.'); assert.equal(v.badge, UNTRAINED_BADGE);
   assert.equal(trialView(result({ decision: 'weird' })).decisionLabel, '보류'); // 모르는 값은 보류로
-  assert.equal(trialView(result({ judge: { name: 'logreg', version: '1', trained: true } })).badge, null);
+  // S13: 학습된 판정기는 '모델 미학습' 대신 버전 배지 (자세한 검사는 아래 테스트)
+  assert.equal(trialView(result({ judge: { name: 'logreg', version: '1', trained: true } })).badge, '학습된 모델 v1');
 });
 
 test('state keeps status, phase, events, baseline and de-duplicates resent results', () => {
@@ -220,6 +222,48 @@ test('replay question note says the order may differ from the recording', () => 
   const v = trialView(result({ question_text: '형제나 자매가 있습니까?', question_label: '연습 질문' }));
   assert.equal(v.questionText, '형제나 자매가 있습니까?'); assert.equal(v.questionLabel, '연습 질문');
   assert.equal(trialView(result()).questionText, null);
+});
+
+test('judge badge: untrained / trained version / exploratory', () => {
+  assert.deepEqual(judgeBadge({ name: 'rule', version: '0.0.1', trained: false }), { text: '모델 미학습(데모)', kind: 'untrained' });
+  assert.deepEqual(judgeBadge(undefined), { text: UNTRAINED_BADGE, kind: 'untrained' });
+  assert.deepEqual(judgeBadge({ name: 'logreg', version: '0.1.0', trained: true, exploratory: false }), { text: '학습된 모델 v0.1.0', kind: 'trained' });
+  assert.deepEqual(judgeBadge({ name: 'logreg', version: '0.1.0', trained: true, exploratory: true }), { text: EXPLORATORY_BADGE, kind: 'exploratory' });
+  assert.equal(EXPLORATORY_BADGE, '탐색용 모델(검증 부족)');
+});
+
+test('score is shown as a lie score and never as a probability', () => {
+  assert.equal(scoreText(0.7234), '거짓 점수 0.72');
+  assert.equal(scoreText(null), null); assert.equal(scoreText(undefined), null); assert.equal(scoreText(NaN), null);
+  const v = trialView(result({ score: 0.81, judge: { name: 'logreg', version: '0.1.0', trained: true, exploratory: false },
+    judge_note: '학습된 로지스틱 회귀 v0.1.0: 참가자 6명, 시도 120개(진실 60, 거짓 60)로 학습. 참가자 분리 검증 균형 정확도 0.90' }));
+  assert.equal(v.scoreText, '거짓 점수 0.81'); assert.equal(v.badge, '학습된 모델 v0.1.0'); assert.equal(v.badgeKind, 'trained');
+  assert.match(v.judgeNote, /참가자 6명, 시도 120개/);
+  for (const text of [v.scoreText, v.badge, v.contributionsHeading, ...v.reasons]) assert.ok(!text.includes('확률'), text);
+  assert.equal(trialView(result()).scoreText, null);   // 규칙 판정기는 점수가 없다
+});
+
+test('logreg contributions: top five by size with readable names', () => {
+  const contributions = ['fsr_sd_ratio_bl', 'gsr_mean_delta_q_z', 'hr_resp', 'ppg_amp_ratio_bl', 'fsr_local_dz', 'gsr_duration_q_s', 'hr_delta_bl']
+    .map((feature, i) => ({ sensor: 'fsr', feature, value: 1, contribution: (i % 2 ? -1 : 1) * (i + 1) / 10, over_threshold: i === 6 }));
+  const v = trialView(result({ judge: { name: 'logreg', version: '0.1.0', trained: true }, contributions }));
+  assert.equal(v.contributions.length, 5);
+  assert.deepEqual(v.contributions.map(c => c.text), ['+0.70', '−0.60', '+0.50', '−0.40', '+0.30']);
+  assert.equal(v.contributions[0].label, '심박 변화 · 기준 측정');
+  assert.equal(v.contributions[0].direction, 'lie'); assert.equal(v.contributions[1].direction, 'truth');
+  assert.match(v.contributionsHeading, /주요 기여 특징/);
+  assert.equal(trialView(result()).contributionsHeading, '센서별 변화 (가운데 선 = 임계값)');
+  assert.equal(featureLabel('fsr_sd_ratio_bl'), '손가락 압력 변동 · 기준 측정');
+  assert.equal(featureLabel('gsr_mean_delta_q_z'), '피부전도 평균 변화 · 질문 구간');
+  assert.equal(featureLabel('gsr_local_dz'), '피부전도 변화(질문 대비)');
+  assert.equal(featureLabel('hr_resp'), '심박 수준');
+});
+
+test('judge fallback notice comes from device status', () => {
+  assert.equal(judgeNotice({ judge: { name: 'rule', fallback_reason: '학습된 판정기를 쓸 수 없어 규칙 판정기로 대신합니다: model.json이 없습니다' } }),
+    '학습된 판정기를 쓸 수 없어 규칙 판정기로 대신합니다: model.json이 없습니다');
+  assert.equal(judgeNotice({ judge: { name: 'logreg', fallback_reason: null } }), null);
+  assert.equal(judgeNotice(null), null);
 });
 
 // ---------- 연결과 자동 재연결 (가짜 WebSocket, 가짜 타이머) ----------
