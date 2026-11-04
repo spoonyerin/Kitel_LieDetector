@@ -89,6 +89,29 @@ export const eventLabel = event => EVENT_LABELS[event?.name] ?? event?.name ?? '
 // 판정 결과 → 화면 모델
 export const DECISION_LABELS = { truth: '진실', lie: '거짓', inconclusive: '보류' };
 export const SENSOR_LABELS = { gsr: '피부전도 GSR', fsr: '손가락 압력 FSR', ppg: '맥파 PPG' };
+// 판정기 배지: 학습되지 않았으면 미학습(데모), 학습됐으면 버전, 탐색용이면 검증 부족
+export const EXPLORATORY_BADGE = '탐색용 모델(검증 부족)';
+export function judgeBadge(judge) {
+  if (judge?.trained !== true) return { text: UNTRAINED_BADGE, kind: 'untrained' };
+  if (judge.exploratory) return { text: EXPLORATORY_BADGE, kind: 'exploratory' };
+  return { text: `학습된 모델 v${judge.version ?? '?'}`, kind: 'trained' };
+}
+// 거짓 점수 (0~1). 보정 전 값이므로 다른 이름을 쓰지 않는다.
+export const scoreText = score => (Number.isFinite(score) ? `거짓 점수 ${score.toFixed(2)}` : null);
+// 학습 모델 특징 이름 → 짧은 한국어 이름
+const FEATURE_SENSOR = { fsr: '손가락 압력', gsr: '피부전도', hr: '심박', ppg: '맥파' };
+const FEATURE_KIND = [['local_dz', '변화(질문 대비)'], ['mean_delta', '평균 변화'], ['max_change', '최대 변화'],
+  ['sd_ratio', '변동'], ['duration', '벗어난 시간'], ['amp_ratio', '세기 변화'], ['hr_delta', '변화'], ['hr_', '수준']];
+export function featureLabel(name) {
+  const n = String(name ?? '');
+  const sensor = FEATURE_SENSOR[n.split('_')[0]] ?? '신호';
+  const kind = (FEATURE_KIND.find(([k]) => n.includes(k)) ?? [null, '특징'])[1];
+  const ref = /_bl(_|$)/.test(n) ? ' · 기준 측정' : /_q(_|$)/.test(n) ? ' · 질문 구간' : '';
+  return `${sensor} ${kind}${ref}`;
+}
+export const MAX_LOGREG_BARS = 5;
+// 판정기 대체 안내 (JUDGE=logreg인데 model.json을 쓸 수 없을 때)
+export const judgeNotice = status => status?.judge?.fallback_reason ?? null;
 export const resultKey = r => [r.source, r.session_id, r.trial_id, r.baseline_id].join('|');
 // 화면에 보이지 않는 경고 (서버 기록에만 남긴다). 서버가 빼고 보내지만 한 번 더 거른다.
 export const HIDDEN_WARNING_PREFIXES = ['UNKNOWN_WARN_BITS'];
@@ -105,7 +128,9 @@ export function trialView(r) {
     kind: decision === 'lie' ? 'warn' : decision === 'inconclusive' ? 'poor' : '',
     reasons: Array.isArray(r.reasons) ? r.reasons : [],
     holdReason: decision === 'inconclusive' ? (r.hold_reason ?? '판정을 보류했습니다.') : null,
-    badge: r.judge?.trained === true ? null : UNTRAINED_BADGE,
+    badge: judgeBadge(r.judge).text,
+    badgeKind: judgeBadge(r.judge).kind,
+    scoreText: scoreText(r.score),
     judgeLabel: `${r.judge?.name ?? '?'} ${r.judge?.version ?? ''}`.trim(),
     judgeNote: r.judge_note ?? '',
     disclaimer: r.disclaimer ?? '',
@@ -113,13 +138,23 @@ export function trialView(r) {
     warnings: visibleWarnings(r.quality?.warnings),
     // 화면에 작게 보여 줄 쉬운 경고 문장 (서버가 만든 warning_texts, 없으면 비움)
     warningTexts: Array.isArray(r.quality?.warning_texts) ? r.quality.warning_texts : [],
-    // 기여도 1 = 임계값. 막대는 임계값을 50%로, 2배 이상은 100%로 자른다 (화면 표시용).
-    contributions: (r.contributions ?? []).map(c => ({
-      sensor: c.sensor, label: SENSOR_LABELS[c.sensor] ?? c.sensor,
-      text: `${c.value >= 0 ? '+' : '−'}${Math.abs(c.value).toFixed(1)}σ`,
-      width: Math.max(2, Math.min(100, Math.abs(c.contribution) * 50)),
-      over: !!c.over_threshold, direction: c.direction,
-    })),
+    // 규칙: 기여도 1 = 임계값. 막대는 임계값을 50%로, 2배 이상은 100%로 자른다 (화면 표시용).
+    // 학습 모델: 기여(계수×표준화 값)가 큰 특징 MAX_LOGREG_BARS개. + 거짓 쪽, − 진실 쪽.
+    contributionsHeading: r.judge?.name === 'logreg' ? '주요 기여 특징 (+ 거짓 쪽, − 진실 쪽)' : '센서별 변화 (가운데 선 = 임계값)',
+    contributions: r.judge?.name === 'logreg'
+      ? [...(r.contributions ?? [])].sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution))
+        .slice(0, MAX_LOGREG_BARS).map(c => ({
+          sensor: c.sensor, label: featureLabel(c.feature),
+          text: `${c.contribution >= 0 ? '+' : '−'}${Math.abs(c.contribution).toFixed(2)}`,
+          width: Math.max(2, Math.min(100, Math.abs(c.contribution) * 50)),
+          over: !!c.over_threshold, direction: c.contribution >= 0 ? 'lie' : 'truth',
+        }))
+      : (r.contributions ?? []).map(c => ({
+        sensor: c.sensor, label: SENSOR_LABELS[c.sensor] ?? c.sensor,
+        text: `${c.value >= 0 ? '+' : '−'}${Math.abs(c.value).toFixed(1)}σ`,
+        width: Math.max(2, Math.min(100, Math.abs(c.contribution) * 50)),
+        over: !!c.over_threshold, direction: c.direction,
+      })),
   };
 }
 

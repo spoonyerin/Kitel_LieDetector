@@ -36,7 +36,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 from server.config import WEB_DIST, Settings, load_settings
-from server.judges.rule import RuleJudge
+from server.judges.logreg import select_judge
 from server.pipeline.bpm import BpmEstimate, BpmTracker, bpm_message
 from server.pipeline.tracker import (BaselineDone, baseline_for, DeviceRebooted, Notice, PhaseChanged, SessionEnded,
                                      SessionStarted, Tracker, TrialDone)
@@ -152,10 +152,25 @@ def run_pipeline(settings: Settings, emit, stop: threading.Event, source=None) -
     """별도 스레드에서 돈다. emit(msg)로 메시지를 넘긴다. stop이 켜지면 바로 멈춘다.
 
     source를 주면 그 입력원을 쓴다 (테스트에서 가짜 시리얼 입력원을 넣을 때).
+    판정기는 JUDGE/MODEL_PATH로 고른다. logreg를 쓸 수 없으면 RuleJudge로 대신하고, 그 이유를
+    콘솔 로그와 모든 device_status 메시지의 judge.fallback_reason으로 알린다.
     """
+    raw_emit = emit
+    judge_status = {}
+
+    def emit(msg):   # device_status에는 현재 판정기 정보를 붙인다
+        if msg.get("type") == "device_status" and judge_status:
+            msg["judge"] = dict(judge_status)
+        raw_emit(msg)
+
     try:
+        judge, fallback = select_judge(settings.judge, settings.model_path, settings.allow_exploratory_model)
+        judge_status.update(name=judge.name, requested=settings.judge, version=getattr(judge, "version", None),
+                            trained=judge.trained, exploratory=getattr(judge, "exploratory", False),
+                            fallback_reason=fallback)
+        if fallback:
+            logger.warning(fallback)
         source = source or make_source(settings, sleep=stop.wait, stop=stop)
-        judge = RuleJudge()
         tracker = Tracker(source.source)
         batcher = SampleBatcher(source.source, batch_sec=settings.sample_batch_sec,
                                 decimate=settings.sample_decimate, max_samples=settings.sample_max_per_batch)

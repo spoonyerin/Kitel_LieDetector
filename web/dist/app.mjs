@@ -1,5 +1,5 @@
 import { CHANNELS, STORAGE_KEY, demoSample, summarizeBaseline, summarizeDemo, recordsToCsv, parseRecords } from './core.mjs';
-import { UNTRAINED_BADGE, TOAST_EVENTS, bpmView, connectLive, eventLabel, initialState, inputLabel, latestResult, normalize, noticeText, phaseDisplay, phaseStep, questionView, reduce, sessionLabel, signalHeading, streamStatusText, trialView, wsUrl } from './live.mjs';
+import { UNTRAINED_BADGE, TOAST_EVENTS, bpmView, connectLive, judgeNotice, eventLabel, initialState, inputLabel, latestResult, normalize, noticeText, phaseDisplay, phaseStep, questionView, reduce, sessionLabel, signalHeading, streamStatusText, trialView, wsUrl } from './live.mjs';
 const $ = id => document.getElementById(id);
 const palette = { hr: '#4e8166', gsr: '#c68c58', fsr: '#9790c3' };
 const questionBank = ['지금 떠올린 숫자는 짝수인가요?', '오늘 아침을 먹었나요?', '지금 보고 있는 카드에 숫자 3이 있나요?', '최근 일주일 안에 영화를 봤나요?', '지금 선택한 색은 파란색인가요?'];
@@ -247,6 +247,7 @@ function renderLiveStatus() {
   const banner = $('connection-banner');
   if (connection !== 'open') { banner.hidden = false; banner.className = 'connection-banner warn'; banner.textContent = '서버와 연결이 끊겼습니다. 자동으로 다시 연결하는 중입니다…'; }
   else if (live.error) { banner.hidden = false; banner.className = 'connection-banner warn'; banner.textContent = live.error.message; }
+  else if (judgeNotice(live.status)) { banner.hidden = false; banner.className = 'connection-banner'; banner.textContent = judgeNotice(live.status); }
   else banner.hidden = true;
 }
 function renderLivePhase() {
@@ -298,7 +299,8 @@ function renderLiveResult() {
   $('result-pill').textContent = v.badge ?? v.judgeLabel;
   const head = el('div', 'live-decision');
   head.append(el('div', `result-heading ${v.kind}`, v.decisionLabel));
-  if (v.badge) head.append(el('span', 'badge-untrained', v.badge));
+  if (v.badge) head.append(el('span', `badge-untrained badge-${v.badgeKind}`, v.badge));
+  if (v.scoreText) head.append(el('span', 'live-score', v.scoreText));
   box.append(el('p', 'live-meta', `${v.title} · ${v.sourceLabel} · 판정기 ${v.judgeLabel}`));
   if (v.questionText) box.append(el('p', 'live-meta live-result-question', `${v.questionLabel ? `${v.questionLabel}: ` : ''}${v.questionText}`));
   box.append(head);
@@ -312,7 +314,7 @@ function renderLiveResult() {
       row.append(el('span', 'contrib-label', c.label), bar, el('span', 'contrib-value', c.text));
       bars.append(row);
     });
-    box.append(el('p', 'live-label', '센서별 변화 (가운데 선 = 임계값)'), bars);
+    box.append(el('p', 'live-label', v.contributionsHeading), bars);
   }
   if (v.warningTexts.length) { // 판정을 막지 않는 경고: 작게
     const warn = el('ul', 'live-warnings'); v.warningTexts.forEach(t => warn.append(el('li', '', t)));
