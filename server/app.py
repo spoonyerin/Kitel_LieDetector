@@ -152,8 +152,9 @@ def run_pipeline(settings: Settings, emit, stop: threading.Event, source=None) -
     """별도 스레드에서 돈다. emit(msg)로 메시지를 넘긴다. stop이 켜지면 바로 멈춘다.
 
     source를 주면 그 입력원을 쓴다 (테스트에서 가짜 시리얼 입력원을 넣을 때).
-    판정기는 JUDGE/MODEL_PATH로 고른다. logreg를 쓸 수 없으면 RuleJudge로 대신하고, 그 이유를
-    콘솔 로그와 모든 device_status 메시지의 judge.fallback_reason으로 알린다.
+    판정기는 JUDGE/MODEL_PATH/RULE_CONFIG로 고른다. logreg를 쓸 수 없으면 RuleJudge로, 규칙 설정 파일을
+    쓸 수 없으면 코드 상수로 대신하고, 그 이유를 콘솔 로그와 모든 device_status 메시지의
+    judge.fallback_reason으로 알린다.
     """
     raw_emit = emit
     judge_status = {}
@@ -164,10 +165,14 @@ def run_pipeline(settings: Settings, emit, stop: threading.Event, source=None) -
         raw_emit(msg)
 
     try:
-        judge, fallback = select_judge(settings.judge, settings.model_path, settings.allow_exploratory_model)
+        judge, fallback = select_judge(settings.judge, settings.model_path, settings.allow_exploratory_model,
+                                       settings.rule_config)
         judge_status.update(name=judge.name, requested=settings.judge, version=getattr(judge, "version", None),
                             trained=judge.trained, exploratory=getattr(judge, "exploratory", False),
                             fallback_reason=fallback)
+        if judge.name == "rule":   # 규칙 판정기: 설정 파일 사용 여부와 검증 여부 (검증 정보가 충분할 때만 true)
+            judge_status.update(rule_config=getattr(judge, "config_path", None),
+                                validated=bool(getattr(judge, "validated", False)))
         if fallback:
             logger.warning(fallback)
         source = source or make_source(settings, sleep=stop.wait, stop=stop)

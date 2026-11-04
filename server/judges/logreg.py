@@ -191,13 +191,19 @@ class LogregJudge:
 # ----------------------------------------------------------
 # 판정기 선택 (대체 포함)
 # ----------------------------------------------------------
-def select_judge(kind: str, model_path: Optional[str] = None,
-                 allow_exploratory: bool = False) -> Tuple[object, Optional[str]]:
-    """(판정기, 대체 이유). logreg를 쓸 수 없으면 RuleJudge와 이유를 돌려준다 (예외를 내지 않는다)."""
-    from server.judges.rule import RuleJudge
-    if kind != "logreg":
-        return RuleJudge(), None
-    try:
-        return LogregJudge(load_model(model_path, allow_exploratory), model_path), None
-    except ModelLoadError as e:
-        return RuleJudge(), f"학습된 판정기를 쓸 수 없어 규칙 판정기로 대신합니다: {e}"
+def select_judge(kind: str, model_path: Optional[str] = None, allow_exploratory: bool = False,
+                 rule_config: Optional[str] = None) -> Tuple[object, Optional[str]]:
+    """(판정기, 대체 이유). logreg를 쓸 수 없으면 RuleJudge와 이유를 돌려준다 (예외를 내지 않는다).
+
+    규칙 판정기는 rule_config(RULE_CONFIG)가 있으면 그 임계값을 쓰고, 쓸 수 없으면 코드 상수로 대신한다.
+    대체 이유가 둘이면 한 줄로 이어 붙인다.
+    """
+    from server.judges.rule import make_rule_judge
+    if kind == "logreg":
+        try:
+            return LogregJudge(load_model(model_path, allow_exploratory), model_path), None
+        except ModelLoadError as e:
+            first = f"학습된 판정기를 쓸 수 없어 규칙 판정기로 대신합니다: {e}"
+            judge, second = make_rule_judge(rule_config)
+            return judge, first if not second else f"{first} / {second}"
+    return make_rule_judge(rule_config)

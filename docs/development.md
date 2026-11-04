@@ -88,10 +88,14 @@ Kitel_LieDetector/
 ├─ training/              ← 학습 파이프라인 (S12, 7.5절)
 │  ├─ build_dataset.py    ← collector 기록 → 시도별 특징 + 확정 라벨 (서버 코드 재사용)
 │  ├─ train_logreg.py     ← 참가자 분리 검증, 기준 모델 비교, model.json 내보내기
+│  ├─ evaluate_rule.py    ← 규칙 판정기 임계값 중첩 검증, rule_config.json 제안 (S14)
+│  ├─ report.py           ← 평가 리포트 report.md (S14)
+│  ├─ bpm_check.py        ← 심박 추정값 ↔ 기준 심박 CSV 비교 (S14)
 │  └─ out/                ← 출력 (gitignore 대상)
 ├─ tests/                 ← pytest (test_lines, test_tracker, test_sources, test_features, test_quality,
 │                            test_judges, test_reasons, test_app, test_stream, test_serial_source, test_bpm,
-│                            test_questions, test_env)
+│                            test_questions, test_env, test_logreg_judge, test_training,
+│                            test_rule_config, test_evaluation, test_bpm_check)
 └─ data/                  ← 깃에 올리지 않음
    ├─ real/               ← 실측 (읽기 전용). 수집기 기록이 여기 있다
    └─ dummy/              ← 더미 (현재 서버는 아무것도 저장하지 않으므로 쓰지 않는다)
@@ -127,7 +131,7 @@ Python 서버가 `web/dist`를 같이 서빙한다 (같은 포트라 CORS 설정
 | 재생 (저장된 로그) | `$env:SOURCE="replay"; $env:REPLAY_RUN="data\real\experiments\run_20261103_161545"; $env:REPLAY_SPEED="4"; .venv\Scripts\python.exe -m uvicorn server.app:app --port 8000` | 저장된 로그 재생 |
 | 시리얼 (기기) | `$env:SOURCE="serial"; $env:SERIAL_PORT="COM6"; .venv\Scripts\python.exe -m uvicorn server.app:app --port 8000` | 실시간 기기 / 기기 연결됨 · 신호 대기 / 기기 연결 끊김 |
 
-- 환경 변수 전체 목록과 기본값은 `server/config.py` 상단 표에 있다. 주요 값: `REPLAY_MAX_WAIT`(세션 사이 공백 단축, 기본 2초), `DUMMY_TRIALS`, `DUMMY_PATTERNS`(calm, reactive, poor), `SERIAL_BAUD`(기본 115200, `collector/record_session.py`의 `--baud` 기본값), `SERIAL_RETRY_SEC`(1~2초), `SERIAL_IDLE_SEC`(기본 5초), `SAMPLE_BATCH_SEC`(0.2~0.5초), `BPM_INTERVAL_SEC`(0.5~1초), `QUESTION_SEED`(질문 순서 시드, 없으면 서버 시작마다 무작위이며 서버 콘솔에 찍힌다), `QUESTION_BANK`(기본 `collector/question_bank.csv`), `JUDGE`(rule 또는 logreg, 기본 rule), `MODEL_PATH`(기본 `training/out/model.json`), `ALLOW_EXPLORATORY_MODEL`(1이면 탐색용 모델도 로드).
+- 환경 변수 전체 목록과 기본값은 `server/config.py` 상단 표에 있다. 주요 값: `REPLAY_MAX_WAIT`(세션 사이 공백 단축, 기본 2초), `DUMMY_TRIALS`, `DUMMY_PATTERNS`(calm, reactive, poor), `SERIAL_BAUD`(기본 115200, `collector/record_session.py`의 `--baud` 기본값), `SERIAL_RETRY_SEC`(1~2초), `SERIAL_IDLE_SEC`(기본 5초), `SAMPLE_BATCH_SEC`(0.2~0.5초), `BPM_INTERVAL_SEC`(0.5~1초), `QUESTION_SEED`(질문 순서 시드, 없으면 서버 시작마다 무작위이며 서버 콘솔에 찍힌다), `QUESTION_BANK`(기본 `collector/question_bank.csv`), `JUDGE`(rule 또는 logreg, 기본 rule), `MODEL_PATH`(기본 `training/out/model.json`), `ALLOW_EXPLORATORY_MODEL`(1이면 탐색용 모델도 로드), `RULE_CONFIG`(규칙 판정기 임계값 JSON, 없으면 코드 상수 3.0/3.0/1).
 - PowerShell의 `$env:` 값은 그 창을 닫을 때까지 남는다. 다른 입력원으로 바꿀 때는 값을 다시 지정하거나 `Remove-Item Env:SOURCE`로 지운다.
 - 재생과 더미는 화면에 "실시간"으로 표시하지 않는다. serial은 기기 줄을 실제로 받는 동안만 `live=true`("실시간 기기")다.
 - 서버는 파일을 쓰지 않는다. `data/dummy/`도 만들지 않는다 (기록 저장은 미구현, I6).
@@ -154,6 +158,9 @@ Python 서버가 `web/dist`를 같이 서빙한다 (같은 포트라 CORS 설정
 .venv\Scripts\python.exe -m training.build_dataset                (data/real → training/out/dataset.csv)
 .venv\Scripts\python.exe -m training.train_logreg                 (데이터셋을 만들어 학습·평가·model.json)
 .venv\Scripts\python.exe -m training.train_logreg --data training\out\dataset.csv --out training\out\model.json [--allow-small]
+.venv\Scripts\python.exe -m training.evaluate_rule              (규칙 임계값 중첩 검증 → training/out/rule_config.json 제안, 자동 적용 안 함)
+.venv\Scripts\python.exe -m training.report                     (평가 리포트 → training/out/report.md, model.json·rule_config.json은 쓰지 않음)
+.venv\Scripts\python.exe -m training.bpm_check ref_bpm.csv      (심박 추정값 비교, 7.6절)
 ```
 
 `features`는 시도별 전체 특징을 CSV로 쓴다 (출력이 `data/real/`, `collector/` 안이면 거부, 종료 코드 2). `--fsr-th`, `--gsr-th`, `--min-sensors`는 임계값 후보를 비교하는 탐색용이며 `rule.py`의 상수를 바꾸지 않는다.
@@ -165,7 +172,7 @@ Python 서버가 `web/dist`를 같이 서빙한다 (같은 포트라 CORS 설정
 cd web; npm test
 ```
 
-2026-11-04 기준 pytest 274개, npm test 30개 통과. 실측 로그가 없으면 해당 테스트는 건너뛴다. 서버 테스트는 127.0.0.1의 빈 포트에 임시 uvicorn을 띄우고, 시리얼 테스트는 가짜 시리얼만 써서 실제 COM 포트를 열지 않는다.
+2026-11-04 기준 pytest 319개, npm test 30개 통과. 실측 로그가 없으면 해당 테스트는 건너뛴다. 서버 테스트는 127.0.0.1의 빈 포트에 임시 uvicorn을 띄우고, 시리얼 테스트는 가짜 시리얼만 써서 실제 COM 포트를 열지 않는다.
 
 수집기 테스트는 따로 실행한다 (현재 폴더 기준으로 `experiments/`를 찾으므로 11절 I8 참고):
 
@@ -269,7 +276,7 @@ data/real/experiments/run_<날짜시각>/
 
 | type | 내용 |
 |---|---|
-| `device_status` | `input`(dummy/replay/serial), `input_label`, `live`, `source`(dummy/hardware), `connected`, `finished`, `message`, `port`, `replay_run`, `judge`(`name`, `requested`, `version`, `trained`, `exploratory`, `fallback_reason`) |
+| `device_status` | `input`(dummy/replay/serial), `input_label`, `live`, `source`(dummy/hardware), `connected`, `finished`, `message`, `port`, `replay_run`, `judge`(`name`, `requested`, `version`, `trained`, `exploratory`, `fallback_reason`, 규칙 판정기면 `rule_config`(설정 파일 경로 또는 null), `validated`) |
 | `phase_update` | `phase`(단계 변화) 또는 `event`(손 접촉, 접촉 문제, 무효, 세션 시작/종료, 재부팅), `trial`, `esp_session`, `session_index`, `session_active` |
 | `sample_batch` | 그래프용 원시 샘플. 열 단위 배열(`time_ms, fsr, gsr, ir, red, phase, trial, seq, contact`), 2개 중 1개(25Hz), 0.25초마다, 묶음당 최대 100개(`dropped`에 버린 수) |
 | `baseline_result` | 기준 측정 평균/표준편차, 상태, 경고, 표준편차 하한 적용 여부 |
@@ -327,10 +334,13 @@ class Judge(Protocol):
    - |국소 dz| ≥ 임계값인 센서가 `MIN_SENSORS_OVER`개 이상이면 `lie`, 아니면 `truth`. 품질 보류, 특징 nan, 임계값 미설정(None)이면 `inconclusive`.
    - 임계값: `FSR_LOCAL_DZ_THRESHOLD = 3.0`, `GSR_LOCAL_DZ_THRESHOLD = 3.0`, `MIN_SENSORS_OVER = 1`. **통계에서 흔히 쓰는 관례(3σ)로 정한 값이며 라벨 데이터로 맞추거나 검증하지 않았다.** 이 안내를 상수 주석과 화면(`judge_note`)에 둔다.
    - 기여도 = |값| / 임계값 (1 이상이면 임계값을 넘음). 이유 문장은 실제로 임계값을 넘은 센서만 말한다.
-   - 임계값은 설정 파일이 아니라 코드 상수다 (M5의 "설정 파일"은 미구현).
-3. `LogregJudge`: **미구현 (M6).** `server/models/model.json`(특징 순서, 정규화 값, 계수, 절편, 임계값, 필터 설정, 버전)을 읽게 한다. 기획서대로 로지스틱 회귀.
+   - 설정 파일(S14, 선택): `RULE_CONFIG`가 가리키는 JSON(`fsr_th`, `gsr_th`, `min_sensors`, `validated`)에서 임계값을 읽는다. 지정하지 않으면 지금처럼 코드 상수를 쓴다. 파일이 없거나, JSON이 깨졌거나, 형식·버전이 다르거나, 값이 잘못됐으면(임계값 ≤ 0, `min_sensors`가 1·2가 아님) 코드 상수로 대신하고 이유를 콘솔 경고와 `device_status.judge.fallback_reason`으로 알린다.
+   - `judge_note`의 "검증됨"은 `validated`에 참가자 수, 시도 수, 균형 정확도, 기준 모델 균형 정확도가 모두 있고, 참가자 5명 이상, 탐색용 아님, 기준 모델보다 나을 때만 쓴다 (예: "…은 라벨 데이터로 검증됨: 참가자 6명, 시도 120개, 참가자 분리 검증 균형 정확도 0.71 (항상 다수 클래스 기준 0.50). 정확도를 보장하지 않습니다."). 설정 파일이 있다는 것만으로 검증됨으로 표시하지 않는다. 검증 정보가 없으면 기본값과 같은 임계값은 기존 문구 그대로, 다른 임계값은 "…은 설정 파일에서 정한 값이며, 라벨 데이터로 검증되지 않았습니다."
+   - 설정 파일을 써도 `trial_result.judge`는 `{name, version, trained}` 그대로다 (`trained=false`, 배지 "모델 미학습(데모)" 유지).
 
-판정기 선택: `JUDGE=rule|logreg`, `MODEL_PATH`, `ALLOW_EXPLORATORY_MODEL` (기본 rule).
+판정기 선택: `JUDGE=rule|logreg`, `MODEL_PATH`, `ALLOW_EXPLORATORY_MODEL`, `RULE_CONFIG` (기본 rule, 설정 파일 없음).
+
+3. 예전 계획의 `server/models/model.json` 경로는 쓰지 않는다. 학습된 판정기는 4번(`training/out/model.json`, `MODEL_PATH`)이다.
 
 4. `LogregJudge` (`server/judges/logreg.py`, **구현됨 S13**, 실제 model.json은 아직 없음):
    - model.json(S12 형식 `truthpulse-logreg`, 버전 0.1.x)의 특징 순서, 결측 대체(중앙값), 정규화, 클리핑, 계수, 절편, 임계값을 그대로 적용한다. 점수 = 1/(1+exp(−(Σ 계수×z + 절편))). model.json만으로 계산한 점수가 학습 코드(`predict_from_model`)와 같음을 테스트로 확인한다.
@@ -450,7 +460,51 @@ class Judge(Protocol):
 - `model.json`: 특징 순서, 결측 대체값, 정규화 평균/표준편차, 클리핑 범위, 계수, 절편, 임계값, C, 필터·특징 설정, 버전, 학습 참가자 수·시도 수, 검증 지표. 원시 데이터, 참가자 ID, run 이름은 넣지 않는다. 기본 출력 `training/out/`(gitignore), `data/real/`·`collector/` 안은 거부.
 - 임시값: `MIN_PARTICIPANTS=5`, `MAX_MISSING_FRAC=0.5`, `STD_CLIP=5`, `C_GRID`, 임계값 0.5. 라벨 데이터로 정하지 않았다.
 - 가짜 데이터: 테스트는 `tmp_path`에 만든 가짜 collector 구조와 가짜 라벨, 합성 특징 표만 쓴다. 학습 코드가 읽는 기본 경로(`data/real/experiments`)와 분리되어 있다.
-- 아직 없음: `model.json`을 읽어 판정하는 `LogregJudge` (M6 나머지).
+- `train(rows, None)`이면 평가만 하고 model.json을 쓰지 않는다 (리포트용).
+
+**규칙 판정기 임계값 검증** (`training/evaluate_rule.py`, S14, M5)
+
+- 데이터: 같은 확정 라벨 데이터셋 (`build_dataset` 또는 `--data`). 국소 dz가 없는 시도는 규칙 판정기가 보류하므로 빼고 개수를 알린다.
+- 격자: FSR·GSR 임계값 1.5~4.5(0.5 간격) × 최소 센서 수 1·2 (98개 조합).
+- 중첩 방식(낙관적 편향 방지): 바깥은 참가자 분리(학습 코드와 같은 규칙). 임계값은 학습 폴드 참가자의 시도로만 고르고(균형 정확도 최대, 같으면 진실→거짓 오판율이 낮고 기본값 3.0/3.0/1에 가까운 쪽), 빼 둔 참가자는 평가만 한다. 빼 둔 참가자의 값을 바꿔도 그 폴드의 선택이 같음을 테스트로 확인한다.
+- 지표: 균형 정확도, 거짓 검출률, 진실→거짓 오판율, 혼동행렬. 기준 모델은 항상 다수 클래스(학습 폴드 기준). 참고로 현재 기본값(3.0σ, 고르지 않음)도 보고한다.
+- 안전장치: 참가자 5명 미만이면 탐색용 경고와 함께 설정 파일을 만들지 않는다 (`--allow-small`이면 `validated: null`로만 만든다 → 서버는 검증됨으로 표시하지 않음). 중첩 검증 균형 정확도가 기준 모델보다 높지 않으면 이유를 출력하고 제안하지 않는다.
+- 출력: `training/out/rule_config.json`(형식 `truthpulse-rule-config`, 최종 임계값은 전체 확정 시도에서 같은 방법으로 고르고, 지표는 중첩 검증 값). **자동 적용하지 않는다.** 쓰려면 `RULE_CONFIG`로 직접 지정한다. `data/real/`·`collector/` 안은 거부.
+- 실측(2026-11-04): 0건 → "평가할 데이터가 없습니다"로 정상 종료.
+
+**평가 리포트** (`training/report.py`, S14)
+
+- `train_logreg`와 `evaluate_rule`을 파일을 쓰지 않는 모드로 돌려 `training/out/report.md` 한 장으로 만든다: 데이터 요약(run·시도·참가자 수, 진실/거짓, 제외 사유), 참가자별 시도 수, 모델별 지표(로지스틱 회귀, 규칙 판정기 중첩 선택, 규칙 기본값, 항상 다수), 혼동행렬, 내보내기 조건 충족 여부, 한계와 "정확도를 보장하지 않음" 안내.
+- 0건이면 "데이터 없음" 리포트를 쓰고 정상 종료한다 (실측 2026-11-04: 연습 38, 예전 형식 3).
+- 참가자는 수집 때 쓴 별칭(`participant_id`)으로만 적는다.
+
+### 7.6 심박 추정값 비교 (`training/bpm_check.py`, S14, I14)
+
+사용자가 직접 잰 기준 심박(맥박 직접 세기, 다른 측정기)과 서버의 심박 추정값을 시도별로 비교한다. `raw_serial_log.txt`만 읽고 라벨 파일은 읽지 않는다 (테스트로 확인).
+
+기준 CSV 양식 (UTF-8, 첫 줄 헤더, 다른 열은 무시):
+
+```
+run,session,trial,ref_bpm,note
+run_20261103_161545,S01,2,74,손목 맥박 15초 x 4
+run_20261103_161545,S01,3,78,손가락 맥박 산소측정기
+run_20261103_161545,S02,1,71,
+```
+
+- `run`: run 폴더 이름(`--root` 아래, 기본 `data/real/experiments`) 또는 run 폴더·`raw_serial_log.txt` 경로
+- `session`: 서버 화면의 세션 순번(`S01` 또는 `1`). 기기 세션 번호가 아니라 `SESSION START` 순서다.
+- `trial`: 기기 시도 번호 (화면·명령줄의 T번호)
+- `ref_bpm`: 기준 심박 (20~250 밖이면 입력 실수로 보고 건너뛴다)
+- **어느 구간에서 재나:** 기본 비교 값은 `hr_resp`(답변 구간 끝 10초)다. 기준도 답변이 끝나기 전 10초 동안 재야 한다. `--window baseline`이면 `hr_bl`(기준 측정 끝 10초)과 비교한다.
+
+사용법:
+
+```
+.venv\Scripts\python.exe -m training.bpm_check C:\temp\ref_bpm.csv
+.venv\Scripts\python.exe -m training.bpm_check C:\temp\ref_bpm.csv --window baseline --out C:\temp\bpm_compare.csv
+```
+
+출력: 시도별 표(기준, 추정, 차이, 비고), 평균 절대 오차(MAE), 편향(추정 − 기준의 평균), 최대 오차, 값이 없는 비율(찾은 시도 중 추정값이 없는 비율), 찾지 못한 시도 수. 비교가 10개 미만이면 흔들릴 수 있다고 안내한다. `--out`은 `data/real/`·`collector/` 안을 거부한다.
 
 ## 8. 웹 (web/, 구현됨)
 
@@ -507,6 +561,9 @@ class Judge(Protocol):
 | 심박 | 합성 50~150 BPM ±2, 신호 없음/약함/불규칙은 None, 판정 미사용, 실측 범위 | `tests/test_bpm.py` |
 | 전처리, 전체 특징 | 인과성(뒤쪽 샘플을 바꿔도 앞 출력 동일), filtfilt 미사용, 합성 신호로 각 특징 값, 평평/기준 없음/짧은 답변 nan, 클리핑, 결정성, 라벨 비참조, RuleJudge 입력 불변, 실측 nan 비율, CSV 출력 보호 | `tests/test_signal.py`, `tests/test_features_full.py` |
 | 학습된 판정기 | model.json 점수 = 학습 코드, 결측 대체, 보류·라벨 키 거부, 기여 특징만 말하는 쉬운 문장, 형식·버전 오류 시 규칙 판정기 대체, 탐색용 허용, 서버가 logreg로 켜짐/대체, 규칙 결과 형식 불변, CLI | `tests/test_logreg_judge.py` |
+| 규칙 설정 파일 | 기본 동작·문구 불변, 설정값 사용, 잘못된 파일 10가지·없는 파일은 상수로 대체, logreg와 규칙 설정 모두 실패 시 이유, 검증 정보가 부족하면 "검증됨" 없음, 완전할 때만 "검증됨", trial_result 형식 불변, 서버 `device_status.judge`, CLI | `tests/test_rule_config.py` |
+| 임계값 검증, 리포트 | RuleJudge와 같은 규칙, 격자, 빼 둔 참가자는 선택에 안 쓰임, 검증된 설정 제안, 5명 미만 탐색용(`validated: null`), 기준 미달 시 제안 안 함, 0건·더미·nan·한 클래스, 출력 보호, 리포트 내용·데이터 없음·부작용 파일 없음 | `tests/test_evaluation.py` |
+| 심박 비교 | 서버 코드로 추정, MAE·편향·결측 비율, 세션 표기, 잘못된 줄 건너뜀, 없는 run/시도, 라벨 파일 미열람, 출력 보호 | `tests/test_bpm_check.py` |
 | 학습 | 라벨 규칙과 제외 사유, 서버와 같은 특징, 라벨을 바꿔도 특징 동일, 더미 거부(폴더·SOURCE·행), 예전 형식, 0건 정상 종료, 참가자 분리, 테스트 폴드 비노출, 5명 미만 경고, 기준 미달 시 내보내기 거부, model.json 내용과 서빙 일치, 출력 보호, 결정성 | `tests/test_training.py` |
 | 질문 | 은행 라벨 열 무시, 순서·시드, 배정 규칙(질문 전/후 무효), 세션·재부팅, 소진, 실측 161545, 판정 미사용 | `tests/test_questions.py` |
 | 서버 | 임시 uvicorn + websockets: 방송, 새 접속자 재전송, 샘플·심박 전송 간격, 재생 결과, 오류 | `tests/test_app.py`, `tests/test_stream.py` |
@@ -529,8 +586,8 @@ class Judge(Protocol):
 | I11 | 서버가 DTR/RTS를 끄고 포트를 열 때 실제 보드가 재부팅되지 않는지 확인 기록이 없다. | 확인 필요 |
 | I12 | 세션 도중에 서버를 켜면 그 세션의 `SESSION START`를 놓쳐 다음 세션까지 그래프·판정이 없다 (collector와 같은 규칙). | 한계 (운영으로 회피: 서버 먼저 켜기) |
 | I13 | 경고 비트 64가 `WARN_BITS`에 없다 (161545 T5, T6). 화면에는 숨기고 서버 로그에만 남긴다. | 펌웨어 확인 필요 |
-| I14 | 심박 추정값을 정답 심박(심전도, 다른 측정기)과 비교한 적이 없다. 정확도는 모른다. | 미검증 |
-| I15 | RuleJudge 임계값 3.0σ는 관례값이며 라벨로 검증하지 않았다. 실측 161545에서 진실 5, 거짓 2, 보류 4가 나오지만 맞았는지는 알 수 없다. | 미검증 (라벨 데이터 필요) |
+| I14 | 심박 추정값을 정답 심박(심전도, 다른 측정기)과 비교한 적이 없다. 정확도는 모른다. 비교 도구는 있다 (`training.bpm_check`, 7.6절). | 미검증 (기준 측정 필요) |
+| I15 | RuleJudge 임계값 3.0σ는 관례값이며 라벨로 검증하지 않았다. 실측 161545에서 진실 5, 거짓 2, 보류 4가 나오지만 맞았는지는 알 수 없다. 검증 도구(`training.evaluate_rule`)와 설정 파일(`RULE_CONFIG`)은 있다. | 미검증 (라벨 데이터 필요) |
 | I16 | 더미 입력원의 일부 흐름(답변 중 손 뗌의 이벤트 순서, 보류 직후 세션 종료 버튼, 표준편차 식)은 실측으로 확인하지 않은 가정이다. | 한계 |
 | I17 | 게임 모드 질문 문장 표시는 구현했다 (8.1절, 서버가 정한 순서). 참가자 별칭 입력은 없다 (웹에서 서버로 보내는 메시지 없음, `participant_id`는 null). | 질문 표시 구현됨, 별칭 미구현 |
 
@@ -554,9 +611,10 @@ class Judge(Protocol):
 - [x] **S11** 학습용 전체 특징 추출 (인과적 전처리, 23개 특징, `features` CSV, 판정 미사용, 실측 판정 변화 없음) (2026-11-04) — M6 준비
 - [x] **S12** 학습 파이프라인 (확정 라벨 데이터셋, 참가자 분리 검증, 기준 모델 비교, model.json 안전장치) (2026-11-04)
 - [x] **S13** `LogregJudge`와 `JUDGE=logreg` 전환 (model.json 검사, 규칙 판정기 대체, 거짓 점수·기여 이유·배지) (2026-11-04)
+- [x] **S14** 규칙 임계값 설정 파일(`RULE_CONFIG`)과 중첩 검증(`evaluate_rule`), 평가 리포트(`report`), 심박 비교(`bpm_check`) — 가짜 데이터로만 검증 (2026-11-04)
 - [x] **M3** FastAPI + WebSocket, 웹 연결(보기 전용), 단계 표시, 배지 (2026-11-04, M2의 S4·S5로 진행)
 - [ ] **M4** 펌웨어 소스 확인 후 기기 결과와 서버 판정 일치 방안 결정, I6 결정
-- [ ] **M5** `RuleJudge` (시연 예비안), 임계값 설정 파일 — RuleJudge는 M2-S3에서 구현. 임계값은 코드 상수이며 설정 파일과 라벨 검증은 남음
+- [ ] **M5** `RuleJudge` (시연 예비안), 임계값 설정 파일 — RuleJudge는 M2-S3, 설정 파일(`RULE_CONFIG`)과 검증 도구는 S14에서 구현(2026-11-04). 라벨 데이터로 실제 검증은 남음
 - [ ] **M6** 학습 파이프라인(참가자 분리 검증), `model.json`, `LogregJudge` 교체 — 파이프라인과 model.json 내보내기는 S12, `LogregJudge`와 `JUDGE=logreg` 전환은 S13에서 구현(2026-11-04). 라벨 확정 데이터 0건이라 학습과 실제 교체는 아직 못 함
 - [ ] **M7** 통합 테스트, 리허설, (선택) ESP32 이식과 저주파 피드백
 
@@ -569,8 +627,8 @@ M1의 수집은 개발과 병행해서 계속한다. M6은 라벨이 확정된 �
 1. **라벨 데이터 수집 (M1):** 짧은 실제 세션으로 본 질문 라벨(`condition`, `confirmed`)이 남는지 확인한 뒤 본격 수집. 수집기와 서버는 같은 포트를 동시에 쓸 수 없으므로 수집은 수집기로 한다.
 2. **서버 기록 저장 (I6):** 저장 위치와 형식 결정 후 `server/storage.py` (모든 기록에 `source`).
 3. **로지스틱 회귀 (M6):** 파이프라인(S12)과 판정기(S13) 완료. 라벨 데이터가 모이면 `python -m training.train_logreg`를 실행하고, model.json이 만들어지면 `JUDGE=logreg`로 바꿔 쓴다. 거짓 점수의 보정 평가는 아직 없다.
-4. **RuleJudge 임계값 검증:** 라벨 데이터로 3.0σ와 국소 dz의 타당성을 평가하고 설정 파일로 옮긴다 (M5).
-5. **심박 추정 검증 (I14):** 다른 측정기와 비교, 그 뒤에 `hr_delta` 특징 검토.
+4. **RuleJudge 임계값 검증 (M5):** 도구는 S14에서 완료. 라벨 데이터가 모이면 `python -m training.evaluate_rule`과 `python -m training.report`를 실행하고, 제안된 `rule_config.json`을 검토한 뒤 `RULE_CONFIG`로 직접 적용한다.
+5. **심박 추정 검증 (I14):** 다른 측정기나 맥박 세기로 기준 CSV를 만들어 `python -m training.bpm_check`로 비교(7.6절), 그 뒤에 `hr_delta` 특징 검토.
 6. **블루투스 SPP:** ESP32 Bluetooth 시리얼(SPP)로 연결하면 Windows에 COM 포트로 잡히므로 `SOURCE=serial`을 그대로 쓸 수 있을 것으로 예상한다 (미확인). DTR/RTS, 재연결, 지연을 실기기로 확인한다.
 7. **버튼 디바운스 (펌웨어):** 로그의 `IGNORED_*` 버튼 이벤트와 POLL/IRQ 중복 여부를 펌웨어 소스와 함께 확인한다.
 8. **펌웨어 확인 (I3, I7, I9, I11, I13):** LED/OLED 판정 기준, 크래시 원인, 경고 비트 64, DTR/RTS 동작.

@@ -186,9 +186,10 @@ def _run(source, brief, judge=None, as_json=False) -> int:
 def _make_judge(args):
     if not args.judge:
         return None
-    if args.model:   # 학습된 판정기 (쓸 수 없으면 규칙 판정기로 대신하고 이유를 출력)
+    if args.model or args.rule_config:   # 학습된 판정기 또는 규칙 설정 파일 (쓸 수 없으면 대체하고 이유를 출력)
         from server.judges.logreg import select_judge
-        judge, fallback = select_judge("logreg", args.model, args.allow_exploratory)
+        judge, fallback = select_judge("logreg" if args.model else "rule", args.model, args.allow_exploratory,
+                                       args.rule_config)
         if fallback:
             print(f"[안내] {fallback}")
         return judge
@@ -395,6 +396,8 @@ def main(argv=None) -> int:
         sp.add_argument("--min-sensors", type=int, default=None, help="탐색용 최소 센서 수 (기본: rule.py 상수)")
         sp.add_argument("--model", default=None, help="--judge와 함께: model.json으로 학습된 판정기 사용")
         sp.add_argument("--allow-exploratory", action="store_true", help="탐색용 model.json도 허용")
+        sp.add_argument("--rule-config", default=None,
+                        help="--judge와 함께: 규칙 판정기 임계값 JSON (RULE_CONFIG와 같은 형식)")
 
     p = sub.add_parser("replay", help="원시 로그를 재생해 시도별 결과를 출력한다")
     p.add_argument("path", help="run 폴더 또는 raw_serial_log.txt 경로")
